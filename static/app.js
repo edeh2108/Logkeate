@@ -528,4 +528,4 @@ async function cargarPerfil() {
     el("div", { class: "card" }, el("h2", {}, "Editar perfil"), form));
 }
 
-iniciar();
+iniciar();  
