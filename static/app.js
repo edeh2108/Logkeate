@@ -1,0 +1,540 @@
+"use strict";
+
+/* ===================== Utilidades ===================== */
+const $ = (id) => document.getElementById(id);
+
+// Crea elementos con textContent (nunca innerHTML con datos del usuario => sin XSS)
+function el(tag, props = {}, ...hijos) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  e.append(...hijos);
+  return e;
+}
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, {
+    method: opts.method || "GET",
+    headers: opts.form ? {} : { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: opts.form || (opts.body ? JSON.stringify(opts.body) : undefined),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Error de servidor");
+  return data;
+}
+
+function mostrarError(id, e) { $(id).textContent = e ? e.message : ""; }
+
+// Las fechas del servidor vienen en UTC sin "Z": se agrega para mostrarlas en hora local
+const fecha = (s) => new Date(/[zZ]|[+-]\d\d:\d\d$/.test(s) ? s : s + "Z").toLocaleString();
+
+// Avatar con iniciales y color estable segun el nombre
+function avatar(nombre, peq = false, foto = null, grande = false) {
+  const tam = (peq ? " peq" : "") + (grande ? " grande" : "");
+  if (foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${foto}`, alt: nombre });
+  const ini = (nombre || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
+  let h = 0;
+  for (const c of nombre || "") h = (h * 31 + c.charCodeAt(0)) % 360;
+  return el("span", { class: "avatar" + tam, style: `background:hsl(${h} 45% 38%)` }, ini);
+}
+
+// Alternar entre iniciar sesion y crear cuenta
+function mostrarForm(registro) {
+  $("form-login").hidden = registro;
+  $("form-registro").hidden = !registro;
+  $("seg-login").classList.toggle("activo", !registro);
+  $("seg-registro").classList.toggle("activo", registro);
+  mostrarError("msg-auth", null);
+}
+$("seg-login").addEventListener("click", () => mostrarForm(false));
+$("seg-registro").addEventListener("click", () => mostrarForm(true));
+
+/* ===================== Autenticacion ===================== */
+function llenarEscuelas(raiz, sel = $("sel-escuela")) {
+  for (const area of raiz.hijos) {
+    for (const fac of area.hijos) {
+      const grupo = el("optgroup", { label: `${area.nombre} · ${fac.nombre}` });
+      for (const esc of fac.hijos) grupo.append(el("option", { value: esc.id }, esc.nombre));
+      sel.append(grupo);
+    }
+  }
+}
+
+async function iniciar() {
+  try {
+    const u = await api("/api/me");
+    entrarApp(u);
+  } catch {
+    $("vista-auth").hidden = false;
+    $("vista-app").hidden = true;
+    try { llenarEscuelas(await api("/api/unidades-publicas")); } catch (e) { mostrarError("msg-auth", e); }
+  }
+}
+
+function entrarApp(u) {
+  $("vista-auth").hidden = true;
+  $("vista-app").hidden = false;
+  pintarChip(u);
+  cargarPosts();
+}
+
+function pintarChip(u) {
+  $("yo").replaceChildren(avatar(u.nombres, true, u.foto), el("span", {}, `${u.nombres.split(" ")[0]} · ${u.facultad}`));
+}
+$("yo").addEventListener("click", () => irA("perfil").catch((e) => mostrarError("msg-app", e)));
+
+$("form-login").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = Object.fromEntries(new FormData(ev.target));
+  try { await api("/api/login", { method: "POST", body: f }); iniciar(); }
+  catch (e) { mostrarError("msg-auth", e); }
+});
+
+$("form-registro").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = Object.fromEntries(new FormData(ev.target));
+  try { await api("/api/registro", { method: "POST", body: f }); iniciar(); }
+  catch (e) { mostrarError("msg-auth", e); }
+});
+
+$("btn-logout").addEventListener("click", async () => {
+  await api("/api/logout", { method: "POST" });
+  location.reload();
+});
+
+/* ===================== Navegacion (menu izquierdo) ===================== */
+let tabActual = "muro";
+const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, foros: cargarForos, grupos: listarGrupos, perfil: cargarPerfil };
+
+async function irA(tab, cargar = true) {
+  tabActual = tab;
+  document.querySelectorAll(".menu button").forEach((x) => x.classList.toggle("activo", x.dataset.tab === tab));
+  document.querySelectorAll(".contenido > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
+  mostrarError("msg-app", null);
+  $("panel-resultado").hidden = true;
+  if (cargar) await CARGADORES[tab]();
+}
+
+document.querySelectorAll(".menu button").forEach((b) =>
+  b.addEventListener("click", () => irA(b.dataset.tab).catch((e) => mostrarError("msg-app", e))));
+
+/* ===================== Emojis, fotos y "me gusta" ===================== */
+const EMOJIS = ("😀 😂 🥹 😍 🥳 😎 🤔 😅 😢 😡 🙄 😴 👍 👏 🙏 💪 🔥 ✨ 🎉 ❤️ 💙 💛 📚 ✏️ 🎓 🧠 💡 📝 ⚽ 🎵 🎮 ☕ 🍕 🌎 🇵🇪 🏛️ ✅ ❓ 🚀 👀").split(" ");
+
+function insertar(campo, texto) {
+  const i = campo.selectionStart ?? campo.value.length, j = campo.selectionEnd ?? i;
+  campo.value = campo.value.slice(0, i) + texto + campo.value.slice(j);
+  campo.focus();
+  campo.setSelectionRange(i + texto.length, i + texto.length);
+}
+
+function botonEmoji(campo) {
+  const pop = el("div", { class: "emoji-pop", hidden: "" },
+    ...EMOJIS.map((e) => el("button", { type: "button", class: "emo", onclick: () => insertar(campo, e) }, e)));
+  const btn = el("button", { type: "button", class: "icono-btn", title: "Emojis", "aria-label": "Insertar emoji",
+    onclick: () => (pop.hidden = !pop.hidden) }, "😊");
+  return el("span", { class: "emoji-wrap" }, btn, pop);
+}
+document.addEventListener("click", (ev) => {
+  if (!ev.target.closest(".emoji-wrap")) document.querySelectorAll(".emoji-pop").forEach((p) => (p.hidden = true));
+  if (!ev.target.closest(".buscador")) $("sugerencias").hidden = true;
+});
+
+function botonLike(tipo, id, total, activo) {
+  const b = el("button", { type: "button", class: "like", title: "Me gusta" });
+  const pintar = (n, a) => { b.classList.toggle("activo", a); b.textContent = `${a ? "❤️" : "🤍"} ${n}`; };
+  pintar(total, activo);
+  b.addEventListener("click", async () => {
+    try { const r = await api(`/api/likes/${tipo}/${id}`, { method: "POST" }); pintar(r.total, r.liked); }
+    catch (e) { mostrarError("msg-app", e); }
+  });
+  return b;
+}
+
+// Caja para publicar (muro o grupo): texto + emojis + foto opcional
+function composer(grupoId, alPublicar) {
+  const area = el("textarea", { maxlength: "1000",
+    placeholder: grupoId ? "Comparte algo con el grupo…" : "¿Qué quieres compartir con San Marcos?" });
+  const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+  const vista = el("div", { class: "preview", hidden: "" });
+  let img = null;
+  const quitar = () => { img = null; archivo.value = ""; vista.hidden = true; vista.replaceChildren(); };
+  archivo.addEventListener("change", () => {
+    const f = archivo.files[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { quitar(); return mostrarError("msg-app", new Error("La imagen no puede pasar de 2 MB")); }
+    img = f;
+    mostrarError("msg-app", null);
+    vista.replaceChildren(el("img", { src: URL.createObjectURL(f), alt: "Vista previa" }),
+      el("button", { type: "button", class: "sec mini", onclick: quitar }, "Quitar"));
+    vista.hidden = false;
+  });
+  const pub = el("button", {}, "Publicar");
+  pub.addEventListener("click", async () => {
+    pub.disabled = true;
+    try {
+      let imagen_id = null;
+      if (img) {
+        const fd = new FormData();
+        fd.append("imagen", img);
+        imagen_id = (await api("/api/imagenes", { method: "POST", form: fd })).id;
+      }
+      await api("/api/posts", { method: "POST", body: { texto: area.value, imagen_id, grupo_id: grupoId } });
+      area.value = "";
+      quitar();
+      mostrarError("msg-app", null);
+      await alPublicar();
+    } catch (e) { mostrarError("msg-app", e); }
+    pub.disabled = false;
+  });
+  return el("div", { class: "card publicar" }, area, vista,
+    el("div", { class: "barra" }, botonEmoji(area),
+      el("button", { type: "button", class: "icono-btn", title: "Agregar foto", onclick: () => archivo.click() }, "📷 Foto"),
+      archivo, el("span", { class: "espacio" }), pub));
+}
+
+/* ===================== Muro + comentarios (ARBOL) ===================== */
+async function pintarPosts(cont, grupoId) {
+  const posts = await api("/api/posts" + (grupoId ? `?grupo=${grupoId}` : ""));
+  cont.replaceChildren(...(posts.length ? posts.map(tarjetaPost)
+    : [el("p", { class: "muted vacio" }, "Aún no hay publicaciones. ¡Escribe la primera!")]));
+}
+
+async function cargarPosts() {
+  $("composer-muro").replaceChildren(composer(null, cargarPosts));
+  await pintarPosts($("posts"));
+}
+
+function tarjetaPost(p) {
+  const zona = el("div", { hidden: "" });
+  const btn = el("button", { class: "sec mini" }, `💬 Comentarios (${p.n_comentarios})`);
+  btn.addEventListener("click", async () => {
+    zona.hidden = !zona.hidden;
+    if (!zona.hidden) await pintarComentarios(p.id, zona);
+  });
+  return el("div", { class: "card" },
+    el("div", { class: "autor" }, avatar(p.autor, false, p.autor_foto),
+      el("div", {}, el("strong", {}, p.autor), el("span", { class: "muted" }, fecha(p.fecha)))),
+    ...(p.texto ? [el("p", { class: "texto" }, p.texto)] : []),
+    ...(p.imagen ? [el("img", { class: "foto", src: `/api/imagenes/${p.imagen}`, alt: "Imagen publicada", loading: "lazy" })] : []),
+    el("div", { class: "acciones" }, botonLike("post", p.id, p.likes, p.yo_like), btn), zona);
+}
+
+// Descarga el arbol y lo recorre en DFS (preorden) con renderNodo
+async function pintarComentarios(postId, zona) {
+  const arbol = await api(`/api/posts/${postId}/comentarios`);
+  const ul = el("ul", { class: "comentarios" });
+  ul.append(...arbol.map((n) => renderNodo(n, 0, postId, zona)));
+  zona.replaceChildren(ul, formRespuesta(postId, null, zona));
+}
+
+function renderNodo(nodo, profundidad, postId, zona) {
+  const li = el("li", { class: "comentario" });
+  const cuerpo = el("div", {},
+    el("div", { class: "autor" }, avatar(nodo.autor, true, nodo.autor_foto), el("strong", {}, nodo.autor),
+      el("span", { class: "meta" }, fecha(nodo.fecha))),
+    el("p", { class: "texto" }, nodo.texto));
+  const resp = el("button", { class: "sec mini" }, "Responder");
+  const hueco = el("div");
+  resp.addEventListener("click", () => {
+    if (hueco.firstChild) hueco.replaceChildren();
+    else hueco.append(formRespuesta(postId, nodo.id, zona));
+  });
+  li.append(cuerpo, el("div", { class: "acciones peq" }, botonLike("comment", nodo.id, nodo.likes, nodo.yo_like), resp), hueco);
+  if (nodo.hijos.length) {                       // caso recursivo: visita cada subarbol
+    const sub = el("ul");
+    sub.append(...nodo.hijos.map((h) => renderNodo(h, profundidad + 1, postId, zona)));
+    li.append(sub);
+  }                                              // caso base: hoja
+  return li;
+}
+
+function formRespuesta(postId, parentId, zona) {
+  const inp = el("input", { placeholder: parentId ? "Tu respuesta…" : "Escribe un comentario…", maxlength: "500" });
+  const ok = el("button", { class: "mini" }, "Enviar");
+  ok.addEventListener("click", async () => {
+    try {
+      await api(`/api/posts/${postId}/comentarios`, { method: "POST", body: { texto: inp.value, parent_id: parentId } });
+      await pintarComentarios(postId, zona);
+    } catch (e) { mostrarError("msg-app", e); }
+  });
+  return el("div", { class: "form-resp" }, inp, botonEmoji(inp), ok);
+}
+
+/* ===================== Buscador (barra superior + filtros avanzados) ===================== */
+let ultimaConsulta = "";
+let ultimoFiltro = null;
+let temporizador;
+
+async function buscarTexto(q, sinNavegar = false) {
+  q = q.trim();
+  if (q.length < 2) return mostrarError("msg-app", new Error("Escribe al menos 2 letras para buscar"));
+  ultimaConsulta = q;
+  $("sugerencias").hidden = true;
+  if (!sinNavegar) await irA("buscar", false);
+  const r = await api(`/api/buscar-rapido?q=${encodeURIComponent(q)}`);
+  $("res-rapidos").replaceChildren(
+    el("div", { class: "card" }, el("h2", {}, `Personas (${r.personas.length})`),
+      ...(r.personas.length ? r.personas.map(itemUsuario) : [el("p", { class: "muted" }, "Nadie coincide con tu búsqueda.")])),
+    el("div", { class: "card" }, el("h2", {}, `Grupos (${r.grupos.length})`),
+      ...(r.grupos.length ? r.grupos.map((g) => filaGrupo(g, () => buscarTexto(q, true))) : [el("p", { class: "muted" }, "Ningún grupo coincide.")])));
+}
+
+$("form-busqueda").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  buscarTexto($("q").value).catch((e) => mostrarError("msg-app", e));
+});
+
+$("q").addEventListener("input", () => {
+  clearTimeout(temporizador);
+  const q = $("q").value.trim();
+  if (q.length < 2) { $("sugerencias").hidden = true; return; }
+  temporizador = setTimeout(async () => {
+    try {
+      const r = await api(`/api/buscar-rapido?q=${encodeURIComponent(q)}`);
+      const personas = r.personas.slice(0, 5).map((u) => el("button", { type: "button", class: "sug",
+        onclick: () => { $("q").value = u.nombres; buscarTexto(u.nombres).catch((e) => mostrarError("msg-app", e)); } },
+        avatar(u.nombres, true, u.foto), el("span", {}, el("strong", {}, u.nombres), el("small", {}, `${u.escuela} · ciclo ${u.ciclo}`))));
+      const grupos = r.grupos.slice(0, 3).map((g) => el("button", { type: "button", class: "sug",
+        onclick: () => { $("sugerencias").hidden = true; abrirGrupo(g.id); } },
+        el("span", { class: "avatar peq grupo-av" }, "👥"), el("span", {}, el("strong", {}, g.nombre), el("small", {}, `${g.miembros} miembros`))));
+      $("sugerencias").replaceChildren(...personas, ...grupos,
+        el("button", { type: "submit", class: "sug todos" }, `Ver todos los resultados para “${q}”`));
+      $("sugerencias").hidden = false;
+    } catch { $("sugerencias").hidden = true; }
+  }, 250);
+});
+
+function construirFiltro() {
+  const fac = $("b-facultad").value.trim(), ciclo = $("b-ciclo").value, inte = $("b-interes").value.trim();
+  const a = [];
+  if (fac) a.push({ campo: "facultad", cmp: "==", valor: fac });
+  if (ciclo) a.push({ campo: "ciclo", cmp: ">=", valor: Number(ciclo) });
+  const A = a.length ? { op: "AND", args: a } : null;
+  const B = inte ? { campo: "intereses", cmp: "CONTAINS", valor: inte } : null;
+  if (A && B) {
+    const c = $("b-comb").value;
+    if (c === "ANDNOT") return { op: "AND", args: [A, { op: "NOT", arg: B }] };
+    return { op: c, args: [A, B] };
+  }
+  return A || B;
+}
+
+async function ejecutarBusqueda() {
+  const filtro = ultimoFiltro;
+  const r = await api("/api/buscar", { method: "POST", body: { filtro } });
+  $("resultados").replaceChildren(
+    el("div", { class: "card" }, el("h2", {}, `Resultados del filtro (${r.resultados.length})`), ...r.resultados.map(itemUsuario)));
+}
+
+$("btn-buscar").addEventListener("click", async () => {
+  const f = construirFiltro();
+  if (!f) return mostrarError("msg-app", new Error("Ingresa al menos un criterio"));
+  ultimoFiltro = f;
+  mostrarError("msg-app", null);
+  try { await ejecutarBusqueda(); } catch (e) { mostrarError("msg-app", e); }
+});
+
+/* ===================== Usuarios y amistad (AUTOMATA) ===================== */
+function itemUsuario(u) {
+  const rel = u.relacion || { estado: "INEXISTENTE" };
+  const btn = (txt, fn, clase = "") => el("button", { class: `mini ${clase}`, onclick: fn }, txt);
+  const acc = (evento) => () => accionAmistad(u.id, evento);
+  const botones = [];
+
+  switch (rel.estado) {
+    case "INEXISTENTE": case "RECHAZADA":
+      botones.push(btn("Enviar solicitud", acc("enviar"))); break;
+    case "PENDIENTE":
+      if (rel.emisor_soy_yo) botones.push(btn("Cancelar solicitud", acc("cancelar"), "sec"));
+      else botones.push(btn("Aceptar", acc("aceptar")), btn("Rechazar", acc("rechazar"), "sec"));
+      break;
+    case "ACEPTADA":
+      botones.push(btn("Eliminar amigo", acc("eliminar_amigo"), "sec")); break;
+    case "BLOQUEADA":
+      if (rel.bloqueado_por_mi) botones.push(btn("Desbloquear", acc("desbloquear")));
+  }
+  botones.push(btn("Grados de separación", () => verGrados(u), "sec"));
+  if (rel.estado !== "BLOQUEADA") botones.push(btn("Bloquear", acc("bloquear"), "peligro"));
+
+  return el("div", { class: "usuario" }, avatar(u.nombres, false, u.foto),
+    el("div", {}, el("strong", {}, u.nombres),
+      el("span", { class: "tipo" }, `${u.facultad} · ${u.escuela} · ciclo ${u.ciclo}`),
+      ...(u.bio ? [el("div", { class: "muted" }, u.bio)] : [])),
+    el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)),
+      " ", el("span", { class: `estado ${rel.estado}` }, rel.estado)),
+    el("div", {}, ...botones));
+}
+
+async function accionAmistad(id, evento) {
+  try {
+    await api(`/api/amistad/${id}/${evento}`, { method: "POST" });
+    mostrarError("msg-app", null);
+    if (tabActual === "buscar") {
+      if (ultimaConsulta) await buscarTexto(ultimaConsulta, true);
+      if (ultimoFiltro) await ejecutarBusqueda();
+    } else if (tabActual === "amigos") await cargarAmigos();
+  } catch (e) { mostrarError("msg-app", e); }
+}
+
+function panel(texto) {
+  const p = $("panel-resultado");
+  p.hidden = false;
+  p.textContent = texto;
+  p.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function verGrados(u) {
+  try {
+    const r = await api(`/api/grados/${u.id}`);
+    panel(r.distancia === null ? r.mensaje
+      : `Grados de separación con ${u.nombres}: ${r.distancia}\nCamino: ${r.camino.join(" → ")}`);
+  } catch (e) { mostrarError("msg-app", e); }
+}
+
+async function cargarAmigos() {
+  const d = await api("/api/amigos");
+  const bloque = (titulo, lista) => el("div", { class: "card" }, el("h2", {}, `${titulo} (${lista.length})`),
+    ...(lista.length ? lista.map(itemUsuario) : [el("p", { class: "muted" }, "—")]));
+  $("listas-amigos").replaceChildren(
+    bloque("Amigos", d.amigos), bloque("Solicitudes recibidas", d.recibidas),
+    bloque("Solicitudes enviadas", d.enviadas), bloque("Bloqueados", d.bloqueados));
+}
+
+/* ===================== Foros ===================== */
+async function cargarForos() {
+  const foros = await api("/api/foros");
+  $("foros").replaceChildren(...foros.map((f) => {
+    const btn = el("button", { class: `mini ${f.sigo ? "sec" : ""}` }, f.sigo ? "Dejar de seguir" : "Seguir");
+    btn.addEventListener("click", async () => {
+      try { await api(`/api/foros/${f.id}/seguir`, { method: "POST" }); await cargarForos(); }
+      catch (e) { mostrarError("msg-app", e); }
+    });
+    return el("div", { class: "usuario foro" }, el("strong", {}, f.nombre),
+      el("span", { class: "tipo" }, `${f.miembros} seguidores`), el("div", {}, btn));
+  }));
+}
+
+/* ===================== Grupos (conjunto de miembros) ===================== */
+function filaGrupo(g, refrescar) {
+  const botones = [el("button", { class: "mini", onclick: () => abrirGrupo(g.id) }, "Abrir")];
+  if (!g.soy_creador) {
+    botones.push(el("button", { class: "mini " + (g.soy_miembro ? "sec" : ""), onclick: async () => {
+      try { await api(`/api/grupos/${g.id}/unirse`, { method: "POST" }); mostrarError("msg-app", null); await refrescar(); }
+      catch (e) { mostrarError("msg-app", e); }
+    } }, g.soy_miembro ? "Salir" : "Unirme"));
+  }
+  return el("div", { class: "usuario foro" }, el("strong", {}, g.nombre),
+    el("span", { class: "tipo" }, `${g.miembros} miembro${g.miembros === 1 ? "" : "s"}`),
+    g.descripcion ? el("p", { class: "muted" }, g.descripcion) : "", el("div", {}, ...botones));
+}
+
+async function listarGrupos() {
+  const lista = await api("/api/grupos");
+  const nombre = el("input", { placeholder: "Nombre del grupo (ej. Matemática Discreta 2026)", maxlength: "60" });
+  const desc = el("input", { placeholder: "Descripción (opcional)", maxlength: "200" });
+  const crear = el("button", {}, "Crear grupo");
+  crear.addEventListener("click", async () => {
+    try {
+      const r = await api("/api/grupos", { method: "POST", body: { nombre: nombre.value, descripcion: desc.value } });
+      mostrarError("msg-app", null);
+      await abrirGrupo(r.id);
+    } catch (e) { mostrarError("msg-app", e); }
+  });
+  $("vista-grupos").replaceChildren(
+    el("div", { class: "card" }, el("h2", {}, "Crea un grupo de estudio"),
+      el("div", { class: "fila-2" }, nombre, crear), el("div", { class: "separa" }, desc)),
+    el("div", { class: "card" }, el("h2", {}, `Grupos (${lista.length})`),
+      ...(lista.length ? lista.map((g) => filaGrupo(g, listarGrupos)) : [el("p", { class: "muted vacio" }, "Todavía no hay grupos. ¡Crea el primero!")])));
+}
+
+async function mostrarGrupo(id) {
+  const g = await api(`/api/grupos/${id}`);
+  const cab = el("div", { class: "card" },
+    el("button", { class: "sec mini", onclick: () => listarGrupos().catch((e) => mostrarError("msg-app", e)) }, "← Todos los grupos"),
+    el("h2", { class: "separa" }, g.nombre),
+    g.descripcion ? el("p", {}, g.descripcion) : "",
+    el("p", { class: "muted" }, `${g.miembros} miembro${g.miembros === 1 ? "" : "s"}: ${g.nombres_miembros.join(", ")}${g.miembros > g.nombres_miembros.length ? "…" : ""}`),
+    ...(g.soy_creador ? [] : [el("button", { class: "mini " + (g.soy_miembro ? "sec" : ""), onclick: async () => {
+      try { await api(`/api/grupos/${id}/unirse`, { method: "POST" }); await mostrarGrupo(id); }
+      catch (e) { mostrarError("msg-app", e); }
+    } }, g.soy_miembro ? "Salir del grupo" : "Unirme al grupo")]));
+  const cont = el("div");
+  const partes = [cab];
+  if (g.soy_miembro) partes.push(composer(id, () => pintarPosts(cont, id)), cont);
+  else partes.push(el("div", { class: "card" }, el("p", { class: "muted" }, "Únete al grupo para ver y compartir publicaciones.")));
+  $("vista-grupos").replaceChildren(...partes);
+  if (g.soy_miembro) await pintarPosts(cont, id);
+}
+
+function abrirGrupo(id) {
+  return irA("grupos", false).then(() => mostrarGrupo(id)).catch((e) => mostrarError("msg-app", e));
+}
+
+/* ===================== Mi perfil ===================== */
+async function cargarPerfil() {
+  const [u, arbol] = await Promise.all([api("/api/me"), api("/api/unidades-publicas")]);
+  const campo = (etiqueta, control) => el("label", {}, etiqueta, control);
+  const nombres = el("input", { value: u.nombres, maxlength: "80", required: "" });
+  const bio = el("textarea", { maxlength: "160", placeholder: "Cuéntale a San Marcos quién eres (máx. 160 caracteres)" });
+  bio.value = u.bio || "";
+  const escuela = el("select", {});
+  llenarEscuelas(arbol, escuela);
+  escuela.value = u.escuela_id;
+  const ciclo = el("input", { type: "number", min: "1", max: "12", value: String(u.ciclo) });
+  const intereses = el("input", { value: (u.intereses || []).join(", "), placeholder: "deportes, música, ajedrez" });
+  const cursos = el("input", { value: (u.cursos || []).join(", "), placeholder: "INF101, MAT201" });
+  const ok = el("p", { class: "ok", role: "status" });
+
+  const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+  archivo.addEventListener("change", async () => {
+    const f = archivo.files[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) return mostrarError("msg-app", new Error("La foto no puede pasar de 2 MB"));
+    try {
+      const fd = new FormData();
+      fd.append("imagen", f);
+      const { id } = await api("/api/imagenes", { method: "POST", form: fd });
+      pintarChip(await api("/api/perfil", { method: "PUT", body: { foto_id: id } }));
+      mostrarError("msg-app", null);
+      await cargarPerfil();
+    } catch (e) { mostrarError("msg-app", e); }
+  });
+  const quitarFoto = async () => {
+    try { pintarChip(await api("/api/perfil", { method: "PUT", body: { foto_id: null } })); await cargarPerfil(); }
+    catch (e) { mostrarError("msg-app", e); }
+  };
+
+  const guardar = el("button", { type: "submit" }, "Guardar cambios");
+  const form = el("form", {}, campo("Nombre completo", nombres), campo("Sobre mí", bio),
+    campo("Escuela profesional", escuela), campo("Ciclo", ciclo), campo("Intereses", intereses), campo("Cursos", cursos),
+    guardar, ok);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const nuevo = await api("/api/perfil", { method: "PUT", body: {
+        nombres: nombres.value, bio: bio.value, escuela_id: escuela.value, ciclo: ciclo.value,
+        intereses: intereses.value, cursos: cursos.value } });
+      pintarChip(nuevo);
+      mostrarError("msg-app", null);
+      $("vista-perfil").querySelector(".perfil-cab h2").textContent = nuevo.nombres;
+      $("vista-perfil").querySelector(".perfil-cab p").textContent = `${nuevo.escuela} · ${nuevo.facultad} · ciclo ${nuevo.ciclo}`;
+      ok.textContent = "✓ Perfil actualizado";
+    } catch (e) { ok.textContent = ""; mostrarError("msg-app", e); }
+  });
+
+  $("vista-perfil").replaceChildren(
+    el("div", { class: "card" },
+      el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
+        el("div", {}, el("h2", {}, u.nombres), el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
+          el("div", { class: "acciones" },
+            el("button", { type: "button", class: "mini", onclick: () => archivo.click() }, u.foto ? "Cambiar foto" : "Subir foto"),
+            ...(u.foto ? [el("button", { type: "button", class: "mini sec", onclick: quitarFoto }, "Quitar foto")] : []), archivo)))),
+    el("div", { class: "card" }, el("h2", {}, "Editar perfil"), form));
+}
+
+iniciar();
