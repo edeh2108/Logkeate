@@ -358,7 +358,6 @@ function itemUsuario(u) {
     case "BLOQUEADA":
       if (rel.bloqueado_por_mi) botones.push(btn("Desbloquear", acc("desbloquear")));
   }
-  botones.push(btn("Grados de separación", () => verGrados(u), "sec"));
   if (rel.estado !== "BLOQUEADA") botones.push(btn("Bloquear", acc("bloquear"), "peligro"));
 
   return el("div", { class: "usuario" }, avatar(u.nombres, false, u.foto),
@@ -386,14 +385,6 @@ function panel(texto) {
   p.hidden = false;
   p.textContent = texto;
   p.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-async function verGrados(u) {
-  try {
-    const r = await api(`/api/grados/${u.id}`);
-    panel(r.distancia === null ? r.mensaje
-      : `Grados de separación con ${u.nombres}: ${r.distancia}\nCamino: ${r.camino.join(" → ")}`);
-  } catch (e) { mostrarError("msg-app", e); }
 }
 
 async function cargarAmigos() {
