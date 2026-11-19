@@ -18,11 +18,11 @@ def crear_indices():
     db.friendships.create_index([("u", 1), ("v", 1)], unique=True)    # sin aristas paralelas
     db.friendships.create_index("v")
     db.friend_requests.create_index("par", unique=True)               # una solicitud por pareja
-    db.forum_follows.create_index([("seguidor", 1), ("foro_id", 1)], unique=True)
     db.academic_units.create_index("path")
     db.comments.create_index([("post_id", 1), ("creado", 1)])
     db.posts.create_index([("creado", -1)])
     db.posts.create_index("grupo_id")
+    db.posts.create_index("autor")
     db.likes.create_index([("tipo", 1), ("obj", 1), ("user", 1)], unique=True)   # un usuario, un "me gusta" por objeto
     db.groups.create_index("nombre_norm", unique=True)
     db.group_members.create_index([("grupo_id", 1), ("user", 1)], unique=True)   # pertenencia = par (grupo, usuario) sin repetir

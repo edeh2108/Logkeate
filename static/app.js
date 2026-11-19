@@ -108,7 +108,10 @@ $("btn-logout").addEventListener("click", async () => {
 
 /* ===================== Navegacion (menu izquierdo) ===================== */
 let tabActual = "muro";
-const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, foros: cargarForos, grupos: listarGrupos, perfil: cargarPerfil };
+const CARGADORES = {
+  muro: cargarPosts, feedgrupos: cargarFeedGrupos, buscar: async () => {},
+  amigos: cargarAmigos, grupos: listarGrupos, perfil: cargarPerfil,
+};
 
 async function irA(tab, cargar = true) {
   tabActual = tab;
@@ -198,15 +201,24 @@ function composer(grupoId, alPublicar) {
 }
 
 /* ===================== Muro + comentarios (ARBOL) ===================== */
+// Muro general (solo yo y mis amigos) o publicaciones de un grupo concreto
 async function pintarPosts(cont, grupoId) {
   const posts = await api("/api/posts" + (grupoId ? `?grupo=${grupoId}` : ""));
-  cont.replaceChildren(...(posts.length ? posts.map(tarjetaPost)
-    : [el("p", { class: "muted vacio" }, "Aún no hay publicaciones. ¡Escribe la primera!")]));
+  const vacio = grupoId ? "Aún no hay publicaciones en este grupo. ¡Escribe la primera!"
+    : "Tu muro está vacío. Publica algo o agrega amigos para ver lo que comparten.";
+  cont.replaceChildren(...(posts.length ? posts.map(tarjetaPost) : [el("p", { class: "muted vacio" }, vacio)]));
 }
 
 async function cargarPosts() {
   $("composer-muro").replaceChildren(composer(null, cargarPosts));
   await pintarPosts($("posts"));
+}
+
+// Feed aparte: publicaciones de todos los grupos a los que pertenezco
+async function cargarFeedGrupos() {
+  const posts = await api("/api/posts/grupos");
+  $("posts-grupos").replaceChildren(...(posts.length ? posts.map(tarjetaPost)
+    : [el("p", { class: "muted vacio" }, "No hay publicaciones de grupos. Únete a un grupo en la pestaña Grupos.")]));
 }
 
 function tarjetaPost(p) {
@@ -218,7 +230,8 @@ function tarjetaPost(p) {
   });
   return el("div", { class: "card" },
     el("div", { class: "autor" }, avatar(p.autor, false, p.autor_foto),
-      el("div", {}, el("strong", {}, p.autor), el("span", { class: "muted" }, fecha(p.fecha)))),
+      el("div", {}, el("strong", {}, p.autor), el("span", { class: "muted" }, fecha(p.fecha))),
+      ...(p.grupo ? [el("button", { type: "button", class: "chip-grupo", onclick: () => abrirGrupo(p.grupo_id) }, `👥 ${p.grupo}`)] : [])),
     ...(p.texto ? [el("p", { class: "texto" }, p.texto)] : []),
     ...(p.imagen ? [el("img", { class: "foto", src: `/api/imagenes/${p.imagen}`, alt: "Imagen publicada", loading: "lazy" })] : []),
     el("div", { class: "acciones" }, botonLike("post", p.id, p.likes, p.yo_like), btn), zona);
@@ -396,20 +409,6 @@ async function cargarAmigos() {
     bloque("Solicitudes enviadas", d.enviadas), bloque("Bloqueados", d.bloqueados));
 }
 
-/* ===================== Foros ===================== */
-async function cargarForos() {
-  const foros = await api("/api/foros");
-  $("foros").replaceChildren(...foros.map((f) => {
-    const btn = el("button", { class: `mini ${f.sigo ? "sec" : ""}` }, f.sigo ? "Dejar de seguir" : "Seguir");
-    btn.addEventListener("click", async () => {
-      try { await api(`/api/foros/${f.id}/seguir`, { method: "POST" }); await cargarForos(); }
-      catch (e) { mostrarError("msg-app", e); }
-    });
-    return el("div", { class: "usuario foro" }, el("strong", {}, f.nombre),
-      el("span", { class: "tipo" }, `${f.miembros} seguidores`), el("div", {}, btn));
-  }));
-}
-
 /* ===================== Grupos (conjunto de miembros) ===================== */
 function filaGrupo(g, refrescar) {
   const botones = [el("button", { class: "mini", onclick: () => abrirGrupo(g.id) }, "Abrir")];
@@ -528,4 +527,4 @@ async function cargarPerfil() {
     el("div", { class: "card" }, el("h2", {}, "Editar perfil"), form));
 }
 
-iniciar();  
+iniciar();

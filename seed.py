@@ -1,4 +1,4 @@
-"""Carga inicial: arbol academico UNMSM (todas las escuelas de pregrado), foros e indices.
+"""Carga inicial: arbol academico UNMSM (todas las escuelas de pregrado) e indices.
 Ejecutar UNA vez:  python seed.py   (es idempotente: se puede repetir)."""
 import re
 import unicodedata
@@ -59,7 +59,6 @@ ARBOL = {
         ("PSI", "Psicología", ["Psicología", "Psicología Organizacional y de la Gestión Humana"]),
     ]),
 }
-FOROS = ["Deportes", "Musica y Arte", "Voluntariado", "Programacion Competitiva"]
 
 
 def put(_id, nombre, tipo, parent, path, nivel, **extra):
@@ -88,9 +87,7 @@ def main():
             vigentes.add(sigla.lower())
             vigentes |= {f"{sigla.lower()}_{slug(e)}" for e in escuelas}
     db.academic_units.delete_many({"_id": {"$nin": list(vigentes)}})
-    for nombre in FOROS:
-        db.forums.replace_one({"_id": slug(nombre)}, {"_id": slug(nombre), "nombre": nombre, "tipo": "extracurricular"}, upsert=True)
-    print("Listo:", db.academic_units.count_documents({}), "unidades,", db.forums.count_documents({}), "foros")
+    print("Listo:", db.academic_units.count_documents({}), "unidades")
 
 
 if __name__ == "__main__":

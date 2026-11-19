@@ -264,42 +264,6 @@ def cursos_comunes(otro):
     )
 
 
-@app.get("/api/foros")
-@login_required
-def foros():
-    me_id = yo()
-    sigo = {f["foro_id"] for f in db.forum_follows.find({"seguidor": me_id})}
-    return jsonify([{"id": f["_id"], "nombre": f["nombre"],
-                     "miembros": db.forum_follows.count_documents({"foro_id": f["_id"]}),
-                     "sigo": f["_id"] in sigo} for f in db.forums.find()])
-
-
-@app.post("/api/foros/<foro_id>/seguir")
-@login_required
-def seguir_foro(foro_id):
-    if not db.forums.find_one({"_id": foro_id}):
-        raise ErrorApi("Foro no encontrado", 404)
-    clave = {"seguidor": yo(), "foro_id": foro_id}     # relacion asimetrica: usuario -> foro
-    if db.forum_follows.delete_one(clave).deleted_count == 0:
-        db.forum_follows.insert_one({**clave, "desde": datetime.now(timezone.utc)})
-        return jsonify(sigo=True)
-    return jsonify(sigo=False)
-
-
-@app.get("/api/foros/union")
-@login_required
-def foros_union():
-    ids = [x for x in request.args.get("ids", "").split(",") if x][:10]
-    miembros = [{f["seguidor"] for f in db.forum_follows.find({"foro_id": i})} for i in ids]
-    if not miembros:
-        raise ErrorApi("Selecciona al menos un foro")
-    uni = conjuntos.union(*miembros)
-    inter = set.intersection(*miembros)
-    nombres = {u["_id"]: u["nombres"] for u in db.users.find({"_id": {"$in": list(uni)}}, {"nombres": 1})}
-    return jsonify(union=sorted(nombres[i] for i in uni if i in nombres),
-                   interseccion=sorted(nombres[i] for i in inter if i in nombres))
-
-
 # ---------- amistades (automata + grafo) ----------
 @app.post("/api/amistad/<otro>/<evento>")
 @login_required
@@ -432,10 +396,15 @@ def ver_imagen(img_id):
 
 # ---------- publicaciones, comentarios (arbol) y me gusta ----------
 def acceso_post(p):
-    """Las publicaciones de un grupo solo las ve y usa quien es miembro del grupo."""
+    """Grupo: solo miembros. Muro general: solo el autor o sus amigos."""
     g = p.get("grupo_id")
-    if g and not db.group_members.find_one({"grupo_id": g, "user": yo()}, {"_id": 1}):
-        raise ErrorApi("Solo los miembros del grupo pueden ver esto", 403)
+    if g:
+        if not db.group_members.find_one({"grupo_id": g, "user": yo()}, {"_id": 1}):
+            raise ErrorApi("Solo los miembros del grupo pueden ver esto", 403)
+        return
+    autor = p.get("autor")
+    if autor != yo() and autor not in servicios.vecinos(yo()):
+        raise ErrorApi("Solo puedes ver publicaciones tuyas o de tus amigos", 403)
 
 
 def fotos_de(ids):
@@ -452,6 +421,24 @@ def likes_de(tipo, ids):
     return cuenta, mios
 
 
+def serializar_posts(docs, nombres_grupo=None):
+    cuenta, mios = likes_de("post", [p["_id"] for p in docs])
+    fotos = fotos_de([p["autor"] for p in docs])
+    out = []
+    for p in docs:
+        item = {"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_foto": fotos.get(p["autor"]),
+                "texto": p.get("texto", ""),
+                "imagen": str(p["imagen_id"]) if p.get("imagen_id") else None,
+                "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0),
+                "yo_like": p["_id"] in mios,
+                "n_comentarios": db.comments.count_documents({"post_id": p["_id"]})}
+        if nombres_grupo is not None and p.get("grupo_id"):
+            item["grupo_id"] = str(p["grupo_id"])
+            item["grupo"] = nombres_grupo.get(p["grupo_id"], "")
+        out.append(item)
+    return out
+
+
 @app.get("/api/posts")
 @login_required
 def posts():
@@ -461,15 +448,21 @@ def posts():
         acceso_post({"grupo_id": gid})
         filtro = {"grupo_id": gid}
     else:
-        filtro = {"grupo_id": {"$exists": False}}      # el muro general no mezcla publicaciones de grupos
+        # Muro general: solo mis publicaciones y las de mis amigos, sin las de grupos
+        permitidos = servicios.vecinos(yo()) + [yo()]
+        filtro = {"grupo_id": {"$exists": False}, "autor": {"$in": permitidos}}
     docs = list(db.posts.find(filtro).sort("creado", -1).limit(30))
-    cuenta, mios = likes_de("post", [p["_id"] for p in docs])
-    fotos = fotos_de([p["autor"] for p in docs])
-    return jsonify([{"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_foto": fotos.get(p["autor"]),
-                     "texto": p.get("texto", ""),
-                     "imagen": str(p["imagen_id"]) if p.get("imagen_id") else None,
-                     "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0), "yo_like": p["_id"] in mios,
-                     "n_comentarios": db.comments.count_documents({"post_id": p["_id"]})} for p in docs])
+    return jsonify(serializar_posts(docs))
+
+
+@app.get("/api/posts/grupos")
+@login_required
+def posts_de_mis_grupos():
+    """Feed aparte: publicaciones de todos los grupos a los que pertenezco."""
+    ids = [m["grupo_id"] for m in db.group_members.find({"user": yo()}, {"grupo_id": 1})]
+    nombres = {g["_id"]: g["nombre"] for g in db.groups.find({"_id": {"$in": ids}}, {"nombre": 1})}
+    docs = list(db.posts.find({"grupo_id": {"$in": ids}}).sort("creado", -1).limit(30))
+    return jsonify(serializar_posts(docs, nombres))
 
 
 @app.post("/api/posts")

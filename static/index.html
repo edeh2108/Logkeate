@@ -61,8 +61,8 @@
     <div class="layout">
       <nav class="menu" aria-label="Secciones">
         <button data-tab="muro" class="activo"><span class="ico">🏠</span>Muro</button>
+        <button data-tab="feedgrupos"><span class="ico">📌</span>Posts de grupos</button>
         <button data-tab="amigos"><span class="ico">🤝</span>Amistades</button>
-        <button data-tab="foros"><span class="ico">💬</span>Foros</button>
         <button data-tab="grupos"><span class="ico">👥</span>Grupos</button>
         <button data-tab="perfil"><span class="ico">👤</span>Mi perfil</button>
       </nav>
@@ -74,6 +74,10 @@
         <section id="tab-muro">
           <div id="composer-muro"></div>
           <div id="posts"></div>
+        </section>
+
+        <section id="tab-feedgrupos" hidden>
+          <div id="posts-grupos"></div>
         </section>
 
         <section id="tab-buscar" hidden>
@@ -99,13 +103,6 @@
 
         <section id="tab-amigos" hidden>
           <div id="listas-amigos"></div>
-        </section>
-
-        <section id="tab-foros" hidden>
-          <div class="card">
-            <h2>Foros</h2>
-            <div id="foros"></div>
-          </div>
         </section>
 
         <section id="tab-perfil" hidden>
