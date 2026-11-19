@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LogKeate · La red de San Marcos</title>
+  <link rel="icon" type="image/png" href="/static/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
@@ -13,7 +14,7 @@
   <!-- ===== Autenticacion ===== -->
 <main id="vista-auth" class="auth" hidden>
     <aside class="auth-marca">
-      <div class="logo"><span class="logo-icono">∀</span><span class="logo-texto">LogKeate</span></div>
+      <div class="logo"><img class="logo-img" src="/static/logo.png" alt=""><span class="logo-texto">LogKeate</span></div>
       <h1>La red social de los sanmarquinos.</h1>
       <p>Conecta con tu facultad, comparte apuntes y encuentra a quién conoces en común. Solo con correo <b>@unmsm.edu.pe</b>.</p>
     </aside>
@@ -37,7 +38,6 @@
         <label>Escuela profesional<select name="escuela_id" id="sel-escuela" required><option value="">Elige tu escuela…</option></select></label>
         <label>Ciclo<input name="ciclo" type="number" min="1" max="12" placeholder="1 a 12" required></label>
         <label>Intereses<input name="intereses" placeholder="deportes, música, ajedrez"></label>
-        <label>Cursos<input name="cursos" placeholder="INF101, MAT201"></label>
         <button class="grande">Crear mi cuenta</button>
       </form>
 
@@ -49,7 +49,7 @@
   <!-- ===== Aplicacion ===== -->
   <div id="vista-app" hidden>
     <header class="topbar">
-      <div class="logo"><span class="logo-icono">∀</span><span class="logo-texto">LogKeate</span></div>
+      <div class="logo"><img class="logo-img" src="/static/logo.png" alt=""><span class="logo-texto">LogKeate</span></div>
       <form id="form-busqueda" class="buscador" role="search" autocomplete="off">
         <svg class="lupa" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         <input id="q" type="search" placeholder="Buscar personas o grupos en LogKeate" aria-label="Buscar">

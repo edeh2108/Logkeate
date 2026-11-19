@@ -136,7 +136,6 @@ def registro():
             "facultad_id": facultad["_id"], "facultad": facultad.get("sigla", facultad["nombre"]),
             "ciclo": ciclo,
             "intereses": lista_texto(d.get("intereses", []), str.lower),
-            "cursos": lista_texto(d.get("cursos", []), str.upper),
             "creado": datetime.now(timezone.utc),
         })
     except DuplicateKeyError:
@@ -170,7 +169,7 @@ def logout():
 @login_required
 def me():
     u = db.users.find_one({"_id": yo()}, PROY)
-    return jsonify({**publico(u), "cursos": u.get("cursos", []), "escuela_id": u.get("escuela_id")})
+    return jsonify({**publico(u), "escuela_id": u.get("escuela_id")})
 
 
 @app.put("/api/perfil")
@@ -204,8 +203,6 @@ def editar_perfil():
                      facultad_id=fac["_id"], facultad=fac.get("sigla", fac["nombre"]))
     if "intereses" in d:
         poner["intereses"] = lista_texto(d["intereses"], str.lower)
-    if "cursos" in d:
-        poner["cursos"] = lista_texto(d["cursos"], str.upper)
     if "foto_id" in d:
         actual = (db.users.find_one({"_id": uid}, {"foto_id": 1}) or {}).get("foto_id")
         if d["foto_id"]:
@@ -247,20 +244,20 @@ def buscar():
 
 
 # ---------- conjuntos ----------
-@app.get("/api/cursos-comunes/<otro>")
+@app.get("/api/intereses-comunes/<otro>")
 @login_required
-def cursos_comunes(otro):
+def intereses_comunes(otro):
     a = db.users.find_one({"_id": yo()})
     b = db.users.find_one({"_id": oid(otro)})
     if not b:
         raise ErrorApi("Usuario no encontrado", 404)
-    ca, cb = a.get("cursos", []), b.get("cursos", [])
+    ia, ib = a.get("intereses", []), b.get("intereses", [])
     return jsonify(
         otro=b["nombres"],
-        interseccion=sorted(conjuntos.interseccion(ca, cb)),
-        union=sorted(conjuntos.union(ca, cb)),
-        solo_mios=sorted(conjuntos.diferencia(ca, cb)),
-        jaccard=round(conjuntos.jaccard(ca, cb), 3),
+        interseccion=sorted(conjuntos.interseccion(ia, ib)),
+        union=sorted(conjuntos.union(ia, ib)),
+        solo_mios=sorted(conjuntos.diferencia(ia, ib)),
+        jaccard=round(conjuntos.jaccard(ia, ib), 3),
     )
 
 

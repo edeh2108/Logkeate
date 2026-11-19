@@ -599,7 +599,6 @@ async function cargarPerfil() {
   escuela.value = u.escuela_id;
   const ciclo = el("input", { type: "number", min: "1", max: "12", value: String(u.ciclo) });
   const intereses = el("input", { value: (u.intereses || []).join(", "), placeholder: "deportes, música, ajedrez" });
-  const cursos = el("input", { value: (u.cursos || []).join(", "), placeholder: "INF101, MAT201" });
   const ok = el("p", { class: "ok", role: "status" });
 
   const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
@@ -623,14 +622,14 @@ async function cargarPerfil() {
 
   const guardar = el("button", { type: "submit" }, "Guardar cambios");
   const form = el("form", {}, campo("Nombre completo", nombres), campo("Sobre mí", bio),
-    campo("Escuela profesional", escuela), campo("Ciclo", ciclo), campo("Intereses", intereses), campo("Cursos", cursos),
+    campo("Escuela profesional", escuela), campo("Ciclo", ciclo), campo("Intereses", intereses),
     guardar, ok);
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
       const nuevo = await api("/api/perfil", { method: "PUT", body: {
         nombres: nombres.value, bio: bio.value, escuela_id: escuela.value, ciclo: ciclo.value,
-        intereses: intereses.value, cursos: cursos.value } });
+        intereses: intereses.value } });
       pintarChip(nuevo);
       mostrarError("msg-app", null);
       $("vista-perfil").querySelector(".perfil-cab h2").textContent = nuevo.nombres;

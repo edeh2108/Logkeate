@@ -87,7 +87,9 @@ def main():
             vigentes.add(sigla.lower())
             vigentes |= {f"{sigla.lower()}_{slug(e)}" for e in escuelas}
     db.academic_units.delete_many({"_id": {"$nin": list(vigentes)}})
-    print("Listo:", db.academic_units.count_documents({}), "unidades")
+    # Los cursos ya no forman parte del perfil: se eliminan de las cuentas que los tenian guardados
+    r = db.users.update_many({"cursos": {"$exists": True}}, {"$unset": {"cursos": ""}})
+    print("Listo:", db.academic_units.count_documents({}), "unidades;", "cursos borrados de", r.modified_count, "cuentas")
 
 
 if __name__ == "__main__":
