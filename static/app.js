@@ -108,10 +108,7 @@ $("btn-logout").addEventListener("click", async () => {
 
 /* ===================== Navegacion (menu izquierdo) ===================== */
 let tabActual = "muro";
-const CARGADORES = {
-  muro: cargarPosts, feedgrupos: cargarFeedGrupos, buscar: async () => {},
-  amigos: cargarAmigos, grupos: listarGrupos, perfil: cargarPerfil,
-};
+const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, grupos: listarGrupos, perfil: cargarPerfil };
 
 async function irA(tab, cargar = true) {
   tabActual = tab;
@@ -214,13 +211,6 @@ async function cargarPosts() {
   await pintarPosts($("posts"));
 }
 
-// Feed aparte: publicaciones de todos los grupos a los que pertenezco
-async function cargarFeedGrupos() {
-  const posts = await api("/api/posts/grupos");
-  $("posts-grupos").replaceChildren(...(posts.length ? posts.map(tarjetaPost)
-    : [el("p", { class: "muted vacio" }, "No hay publicaciones de grupos. Únete a un grupo en la pestaña Grupos.")]));
-}
-
 function tarjetaPost(p) {
   const zona = el("div", { hidden: "" });
   const btn = el("button", { class: "sec mini" }, `💬 Comentarios (${p.n_comentarios})`);
@@ -230,8 +220,7 @@ function tarjetaPost(p) {
   });
   return el("div", { class: "card" },
     el("div", { class: "autor" }, avatar(p.autor, false, p.autor_foto),
-      el("div", {}, el("strong", {}, p.autor), el("span", { class: "muted" }, fecha(p.fecha))),
-      ...(p.grupo ? [el("button", { type: "button", class: "chip-grupo", onclick: () => abrirGrupo(p.grupo_id) }, `👥 ${p.grupo}`)] : [])),
+      el("div", {}, el("strong", {}, p.autor), el("span", { class: "muted" }, fecha(p.fecha)))),
     ...(p.texto ? [el("p", { class: "texto" }, p.texto)] : []),
     ...(p.imagen ? [el("img", { class: "foto", src: `/api/imagenes/${p.imagen}`, alt: "Imagen publicada", loading: "lazy" })] : []),
     el("div", { class: "acciones" }, botonLike("post", p.id, p.likes, p.yo_like), btn), zona);
@@ -314,7 +303,7 @@ $("q").addEventListener("input", () => {
         avatar(u.nombres, true, u.foto), el("span", {}, el("strong", {}, u.nombres), el("small", {}, `${u.escuela} · ciclo ${u.ciclo}`))));
       const grupos = r.grupos.slice(0, 3).map((g) => el("button", { type: "button", class: "sug",
         onclick: () => { $("sugerencias").hidden = true; abrirGrupo(g.id); } },
-        el("span", { class: "avatar peq grupo-av" }, "👥"), el("span", {}, el("strong", {}, g.nombre), el("small", {}, `${g.miembros} miembros`))));
+        avatarGrupo(g, true), el("span", {}, el("strong", {}, g.nombre), el("small", {}, `${g.miembros} miembros`))));
       $("sugerencias").replaceChildren(...personas, ...grupos,
         el("button", { type: "submit", class: "sug todos" }, `Ver todos los resultados para “${q}”`));
       $("sugerencias").hidden = false;
@@ -410,6 +399,12 @@ async function cargarAmigos() {
 }
 
 /* ===================== Grupos (conjunto de miembros) ===================== */
+function avatarGrupo(g, peq = false, grande = false) {
+  const tam = (peq ? " peq" : "") + (grande ? " grande" : "");
+  if (g.foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${g.foto}`, alt: g.nombre });
+  return el("span", { class: "avatar grupo" + tam }, "👥");
+}
+
 function filaGrupo(g, refrescar) {
   const botones = [el("button", { class: "mini", onclick: () => abrirGrupo(g.id) }, "Abrir")];
   if (!g.soy_creador) {
@@ -418,9 +413,10 @@ function filaGrupo(g, refrescar) {
       catch (e) { mostrarError("msg-app", e); }
     } }, g.soy_miembro ? "Salir" : "Unirme"));
   }
-  return el("div", { class: "usuario foro" }, el("strong", {}, g.nombre),
-    el("span", { class: "tipo" }, `${g.miembros} miembro${g.miembros === 1 ? "" : "s"}`),
-    g.descripcion ? el("p", { class: "muted" }, g.descripcion) : "", el("div", {}, ...botones));
+  return el("div", { class: "usuario foro fila-grupo" }, avatarGrupo(g),
+    el("div", { class: "grupo-info" }, el("strong", {}, g.nombre),
+      el("span", { class: "tipo" }, `${g.miembros} miembro${g.miembros === 1 ? "" : "s"}`),
+      g.descripcion ? el("p", { class: "muted" }, g.descripcion) : "", el("div", {}, ...botones)));
 }
 
 async function listarGrupos() {
@@ -444,15 +440,41 @@ async function listarGrupos() {
 
 async function mostrarGrupo(id) {
   const g = await api(`/api/grupos/${id}`);
+  // Foto del grupo: solo la cambia el creador o un administrador
+  const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+  archivo.addEventListener("change", async () => {
+    const f = archivo.files[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) return mostrarError("msg-app", new Error("La foto no puede pasar de 2 MB"));
+    try {
+      const fd = new FormData();
+      fd.append("imagen", f);
+      const { id: fotoId } = await api("/api/imagenes", { method: "POST", form: fd });
+      await api(`/api/grupos/${id}/foto`, { method: "PUT", body: { foto_id: fotoId } });
+      mostrarError("msg-app", null);
+      await mostrarGrupo(id);
+    } catch (e) { mostrarError("msg-app", e); }
+  });
+  const quitarFoto = async () => {
+    try { await api(`/api/grupos/${id}/foto`, { method: "PUT", body: { foto_id: null } }); await mostrarGrupo(id); }
+    catch (e) { mostrarError("msg-app", e); }
+  };
+  const botonesFoto = g.puedo_editar ? [
+    el("button", { type: "button", class: "mini", onclick: () => archivo.click() }, g.foto ? "Cambiar foto" : "Subir foto"),
+    ...(g.foto ? [el("button", { type: "button", class: "mini sec", onclick: quitarFoto }, "Quitar foto")] : []), archivo] : [];
+
   const cab = el("div", { class: "card" },
     el("button", { class: "sec mini", onclick: () => listarGrupos().catch((e) => mostrarError("msg-app", e)) }, "← Todos los grupos"),
-    el("h2", { class: "separa" }, g.nombre),
-    g.descripcion ? el("p", {}, g.descripcion) : "",
-    el("p", { class: "muted" }, `${g.miembros} miembro${g.miembros === 1 ? "" : "s"}: ${g.nombres_miembros.join(", ")}${g.miembros > g.nombres_miembros.length ? "…" : ""}`),
-    ...(g.soy_creador ? [] : [el("button", { class: "mini " + (g.soy_miembro ? "sec" : ""), onclick: async () => {
-      try { await api(`/api/grupos/${id}/unirse`, { method: "POST" }); await mostrarGrupo(id); }
-      catch (e) { mostrarError("msg-app", e); }
-    } }, g.soy_miembro ? "Salir del grupo" : "Unirme al grupo")]));
+    el("div", { class: "perfil-cab separa" }, avatarGrupo(g, false, true),
+      el("div", {}, el("h2", {}, g.nombre),
+        g.descripcion ? el("p", {}, g.descripcion) : "",
+        el("p", { class: "muted" }, `${g.miembros} miembro${g.miembros === 1 ? "" : "s"}: ${g.nombres_miembros.join(", ")}${g.miembros > g.nombres_miembros.length ? "…" : ""}`),
+        el("div", { class: "acciones" }, ...botonesFoto,
+          ...(g.soy_creador ? [] : [el("button", { class: "mini " + (g.soy_miembro ? "sec" : ""), onclick: async () => {
+            try { await api(`/api/grupos/${id}/unirse`, { method: "POST" }); await mostrarGrupo(id); }
+            catch (e) { mostrarError("msg-app", e); }
+          } }, g.soy_miembro ? "Salir del grupo" : "Unirme al grupo")]))))
+  );
   const cont = el("div");
   const partes = [cab];
   if (g.soy_miembro) partes.push(composer(id, () => pintarPosts(cont, id)), cont);

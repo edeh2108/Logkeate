@@ -150,9 +150,11 @@ table.tv tr.ok td { background: #dcf1e5; font-weight: 700; }
 .vacio { text-align: center; padding: 1.2rem 0; }
 .separa { margin-top: .6rem; }
 
-/* ---------- etiqueta del grupo en una publicacion ---------- */
-.chip-grupo { margin-left: auto; background: var(--vino-claro); color: var(--vino); border: 0; border-radius: 999px; padding: .2rem .7rem; font-size: .8rem; font-weight: 600; }
-.chip-grupo:hover { background: #f0cfd8; }
+/* ---------- foto de grupo ---------- */
+.avatar.grupo { background: var(--oro); font-size: 1.2rem; }
+.avatar.grupo.grande { font-size: 2.4rem; }
+.usuario.foro.fila-grupo { display: flex; align-items: flex-start; gap: .8rem; }
+.fila-grupo .grupo-info { min-width: 0; flex: 1; }
 
 /* ---------- celular ---------- */
 @media (max-width: 820px) {

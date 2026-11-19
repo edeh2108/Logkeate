@@ -421,7 +421,7 @@ def likes_de(tipo, ids):
     return cuenta, mios
 
 
-def serializar_posts(docs, nombres_grupo=None):
+def serializar_posts(docs):
     cuenta, mios = likes_de("post", [p["_id"] for p in docs])
     fotos = fotos_de([p["autor"] for p in docs])
     out = []
@@ -432,9 +432,6 @@ def serializar_posts(docs, nombres_grupo=None):
                 "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0),
                 "yo_like": p["_id"] in mios,
                 "n_comentarios": db.comments.count_documents({"post_id": p["_id"]})}
-        if nombres_grupo is not None and p.get("grupo_id"):
-            item["grupo_id"] = str(p["grupo_id"])
-            item["grupo"] = nombres_grupo.get(p["grupo_id"], "")
         out.append(item)
     return out
 
@@ -453,16 +450,6 @@ def posts():
         filtro = {"grupo_id": {"$exists": False}, "autor": {"$in": permitidos}}
     docs = list(db.posts.find(filtro).sort("creado", -1).limit(30))
     return jsonify(serializar_posts(docs))
-
-
-@app.get("/api/posts/grupos")
-@login_required
-def posts_de_mis_grupos():
-    """Feed aparte: publicaciones de todos los grupos a los que pertenezco."""
-    ids = [m["grupo_id"] for m in db.group_members.find({"user": yo()}, {"grupo_id": 1})]
-    nombres = {g["_id"]: g["nombre"] for g in db.groups.find({"_id": {"$in": ids}}, {"nombre": 1})}
-    docs = list(db.posts.find({"grupo_id": {"$in": ids}}).sort("creado", -1).limit(30))
-    return jsonify(serializar_posts(docs, nombres))
 
 
 @app.post("/api/posts")
@@ -549,8 +536,17 @@ def like(tipo, obj_id):
 
 
 # ---------- grupos (un grupo es el CONJUNTO de sus miembros) ----------
+def es_admin_grupo(g, me_id):
+    """El creador y los miembros con rol 'admin' pueden editar el grupo."""
+    if g["creador"] == me_id:
+        return True
+    return db.group_members.find_one({"grupo_id": g["_id"], "user": me_id, "rol": "admin"}, {"_id": 1}) is not None
+
+
 def resumen_grupo(g, me_id):
     return {"id": str(g["_id"]), "nombre": g["nombre"], "descripcion": g.get("descripcion", ""),
+            "foto": str(g["foto_id"]) if g.get("foto_id") else None,
+            "puedo_editar": es_admin_grupo(g, me_id),
             "miembros": db.group_members.count_documents({"grupo_id": g["_id"]}),
             "soy_miembro": db.group_members.find_one({"grupo_id": g["_id"], "user": me_id}, {"_id": 1}) is not None,
             "soy_creador": g["creador"] == me_id}
@@ -609,6 +605,30 @@ def unirse_grupo(gid):
     except DuplicateKeyError:
         pass
     return jsonify(miembro=True)
+
+
+@app.put("/api/grupos/<gid>/foto")
+@login_required
+def foto_grupo(gid):
+    """Pone o quita la foto del grupo. Solo el creador o un administrador del grupo."""
+    g = db.groups.find_one({"_id": oid(gid)})
+    if not g:
+        raise ErrorApi("Grupo no encontrado", 404)
+    if not es_admin_grupo(g, yo()):
+        raise ErrorApi("Solo el creador o un administrador puede cambiar la foto del grupo", 403)
+    d = datos()
+    actual = g.get("foto_id")
+    if d.get("foto_id"):
+        nueva = oid(d["foto_id"])
+        if not db.images.find_one({"_id": nueva, "owner": yo()}, {"_id": 1}):
+            raise ErrorApi("Imagen invalida")
+        db.groups.update_one({"_id": g["_id"]}, {"$set": {"foto_id": nueva}})
+    else:
+        nueva = None
+        db.groups.update_one({"_id": g["_id"]}, {"$unset": {"foto_id": ""}})
+    if actual and actual != nueva:
+        db.images.delete_one({"_id": actual})          # no dejar fotos viejas huerfanas
+    return jsonify(resumen_grupo(db.groups.find_one({"_id": g["_id"]}), yo()))
 
 
 # ---------- buscador rapido (personas y grupos) ----------
