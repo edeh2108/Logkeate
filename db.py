@@ -27,3 +27,6 @@ def crear_indices():
     db.groups.create_index("nombre_norm", unique=True)
     db.group_members.create_index([("grupo_id", 1), ("user", 1)], unique=True)   # pertenencia = par (grupo, usuario) sin repetir
     db.users.create_index("nombres")
+    db.messages.create_index([("par", 1), ("_id", 1)])                 # historial de una conversacion
+    db.messages.create_index([("receptor", 1), ("leido", 1)])          # contador de no leidos
+    db.messages.create_index([("emisor", 1), ("creado", -1)])          # limite de mensajes por minuto

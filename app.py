@@ -631,6 +631,97 @@ def foto_grupo(gid):
     return jsonify(resumen_grupo(db.groups.find_one({"_id": g["_id"]}), yo()))
 
 
+# ---------- mensajes directos (solo entre amigos) ----------
+MAX_MSG = 1000
+MSG_POR_MINUTO = 20
+
+
+def exigir_amistad(otro_id):
+    """Solo pueden chatear dos personas con amistad ACEPTADA (si hay bloqueo, el estado ya no es ACEPTADA)."""
+    if otro_id == yo():
+        raise ErrorApi("No puedes escribirte a ti mismo")
+    doc = db.friend_requests.find_one({"par": servicios.clave_par(yo(), otro_id)}, {"estado": 1})
+    if not doc or doc["estado"] != "ACEPTADA":
+        raise ErrorApi("Solo puedes chatear con tus amigos", 403)
+
+
+def json_mensaje(m):
+    return {"id": str(m["_id"]), "mio": m["emisor"] == yo(), "texto": m["texto"],
+            "fecha": m["creado"].isoformat()}
+
+
+@app.get("/api/mensajes")
+@login_required
+def conversaciones():
+    """Una conversacion por amigo, con el ultimo mensaje y los no leidos."""
+    me_id = yo()
+    amigos_ids = servicios.vecinos(me_id)
+    pares = {servicios.clave_par(me_id, a): a for a in amigos_ids}
+    ultimos = {d["_id"]: d["m"] for d in db.messages.aggregate([
+        {"$match": {"par": {"$in": list(pares)}}}, {"$sort": {"_id": -1}},
+        {"$group": {"_id": "$par", "m": {"$first": "$$ROOT"}}}])}
+    sin_leer = {d["_id"]: d["n"] for d in db.messages.aggregate([
+        {"$match": {"receptor": me_id, "leido": False, "emisor": {"$in": amigos_ids}}},
+        {"$group": {"_id": "$emisor", "n": {"$sum": 1}}}])}
+    users = {u["_id"]: u for u in db.users.find({"_id": {"$in": amigos_ids}}, {"nombres": 1, "foto_id": 1})}
+    out = []
+    for par, a in pares.items():
+        u = users.get(a)
+        if not u:
+            continue
+        m = ultimos.get(par)
+        out.append({"id": str(a), "nombres": u["nombres"],
+                    "foto": str(u["foto_id"]) if u.get("foto_id") else None,
+                    "ultimo": (("Tú: " if m["emisor"] == me_id else "") + m["texto"])[:60] if m else "",
+                    "fecha": m["creado"].isoformat() if m else None,
+                    "no_leidos": sin_leer.get(a, 0)})
+    out.sort(key=lambda c: c["nombres"].lower())
+    out.sort(key=lambda c: c["fecha"] or "", reverse=True)       # recientes primero, sin mensajes al final
+    return jsonify(out)
+
+
+@app.get("/api/mensajes-no-leidos")
+@login_required
+def mensajes_no_leidos():
+    total = db.messages.count_documents(
+        {"receptor": yo(), "leido": False, "emisor": {"$in": servicios.vecinos(yo())}})
+    return jsonify(total=total)
+
+
+@app.get("/api/mensajes/<otro>")
+@login_required
+def historial(otro):
+    """Sin parametros: los ultimos 50. Con ?despues=<id>: solo los mensajes nuevos (para actualizar el chat)."""
+    otro_id = oid(otro)
+    exigir_amistad(otro_id)
+    par = servicios.clave_par(yo(), otro_id)
+    despues = request.args.get("despues")
+    if despues:
+        docs = list(db.messages.find({"par": par, "_id": {"$gt": oid(despues)}}).sort("_id", 1).limit(100))
+    else:
+        docs = list(db.messages.find({"par": par}).sort("_id", -1).limit(50))[::-1]
+    db.messages.update_many({"par": par, "receptor": yo(), "leido": False}, {"$set": {"leido": True}})
+    return jsonify([json_mensaje(m) for m in docs])
+
+
+@app.post("/api/mensajes/<otro>")
+@login_required
+def enviar_mensaje(otro):
+    otro_id = oid(otro)
+    exigir_amistad(otro_id)
+    texto = str(datos().get("texto", "")).strip()
+    if not 1 <= len(texto) <= MAX_MSG:
+        raise ErrorApi(f"El mensaje debe tener entre 1 y {MAX_MSG} caracteres")
+    ahora = datetime.now(timezone.utc)
+    recientes = db.messages.count_documents(
+        {"emisor": yo(), "creado": {"$gt": ahora - timedelta(seconds=60)}})
+    if recientes >= MSG_POR_MINUTO:
+        raise ErrorApi("Estás enviando mensajes muy rápido. Espera un momento.", 429)
+    db.messages.insert_one({"par": servicios.clave_par(yo(), otro_id), "emisor": yo(), "receptor": otro_id,
+                            "texto": texto, "creado": ahora, "leido": False})
+    return jsonify(ok=True), 201
+
+
 # ---------- buscador rapido (personas y grupos) ----------
 @app.get("/api/buscar-rapido")
 @login_required

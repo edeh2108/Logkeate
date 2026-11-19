@@ -80,6 +80,7 @@ function entrarApp(u) {
   $("vista-app").hidden = false;
   pintarChip(u);
   cargarPosts();
+  if (!badgeIniciado) { badgeIniciado = true; actualizarBadge(); setInterval(actualizarBadge, 20000); }
 }
 
 function pintarChip(u) {
@@ -108,9 +109,10 @@ $("btn-logout").addEventListener("click", async () => {
 
 /* ===================== Navegacion (menu izquierdo) ===================== */
 let tabActual = "muro";
-const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, grupos: listarGrupos, perfil: cargarPerfil };
+const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, mensajes: cargarMensajes, grupos: listarGrupos, perfil: cargarPerfil };
 
 async function irA(tab, cargar = true) {
+  detenerSondeo();
   tabActual = tab;
   document.querySelectorAll(".menu button").forEach((x) => x.classList.toggle("activo", x.dataset.tab === tab));
   document.querySelectorAll(".contenido > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
@@ -356,7 +358,7 @@ function itemUsuario(u) {
       else botones.push(btn("Aceptar", acc("aceptar")), btn("Rechazar", acc("rechazar"), "sec"));
       break;
     case "ACEPTADA":
-      botones.push(btn("Eliminar amigo", acc("eliminar_amigo"), "sec")); break;
+      botones.push(btn("Mensaje", () => abrirMensajes(u.id)), btn("Eliminar amigo", acc("eliminar_amigo"), "sec")); break;
     case "BLOQUEADA":
       if (rel.bloqueado_por_mi) botones.push(btn("Desbloquear", acc("desbloquear")));
   }
@@ -485,6 +487,104 @@ async function mostrarGrupo(id) {
 
 function abrirGrupo(id) {
   return irA("grupos", false).then(() => mostrarGrupo(id)).catch((e) => mostrarError("msg-app", e));
+}
+
+/* ===================== Mensajes directos (solo entre amigos) ===================== */
+let sondeo = null;            // temporizador que actualiza el chat abierto
+let badgeIniciado = false;
+function detenerSondeo() { clearInterval(sondeo); sondeo = null; }
+
+async function actualizarBadge() {
+  try {
+    const { total } = await api("/api/mensajes-no-leidos");
+    $("badge-msg").textContent = total > 99 ? "99+" : String(total);
+    $("badge-msg").hidden = total === 0;
+  } catch { /* sin sesion o sin red: se reintenta en el siguiente ciclo */ }
+}
+
+function abrirMensajes(id) {
+  return irA("mensajes", false).then(() => cargarMensajes(id)).catch((e) => mostrarError("msg-app", e));
+}
+
+async function cargarMensajes(abrirId = null) {
+  let convs = [], activo = null, traerActivo = null;
+  const lista = el("div", { class: "chat-lista" });
+  const panelChat = el("div", { class: "chat-panel" },
+    el("p", { class: "muted vacio" }, "Elige un amigo para empezar a chatear."));
+  $("vista-mensajes").replaceChildren(el("div", { class: "chat-layout" }, lista, panelChat));
+
+  const pintarLista = () => lista.replaceChildren(...(convs.length ? convs.map((c) => {
+    const item = el("button", { type: "button", class: "chat-item" + (c.id === activo ? " activo" : "") },
+      avatar(c.nombres, true, c.foto),
+      el("span", { class: "chat-meta" }, el("strong", {}, c.nombres), el("small", {}, c.ultimo || "Sin mensajes")),
+      ...(c.no_leidos ? [el("span", { class: "badge" }, String(c.no_leidos))] : []));
+    item.addEventListener("click", () => abrir(c).catch((e) => mostrarError("msg-app", e)));
+    return item;
+  }) : [el("p", { class: "muted vacio" }, "Agrega amigos para poder escribirles.")]));
+
+  const abrir = async (c) => {
+    activo = c.id;
+    traerActivo = null;
+    let ultimoId = null;
+    const caja = el("div", { class: "chat-msgs", role: "log" });
+    const inp = el("input", { placeholder: "Escribe un mensaje…", maxlength: "1000" });
+    const enviar = el("button", { type: "submit" }, "Enviar");
+    const form = el("form", { class: "chat-form" }, inp, botonEmoji(inp), enviar);
+
+    const burbuja = (m) => el("div", { class: "burbuja " + (m.mio ? "mia" : "suya") },
+      el("p", { class: "texto" }, m.texto), el("small", {}, fecha(m.fecha)));
+    const traer = async (forzar = false) => {
+      const msgs = await api(`/api/mensajes/${c.id}` + (ultimoId ? `?despues=${ultimoId}` : ""));
+      if (!msgs.length) return;
+      const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 60;
+      caja.querySelector(".vacio")?.remove();
+      caja.append(...msgs.map(burbuja));
+      ultimoId = msgs[msgs.length - 1].id;
+      if (forzar || abajo) caja.scrollTop = caja.scrollHeight;
+    };
+
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const texto = inp.value.trim();
+      if (!texto) return;
+      enviar.disabled = true;
+      try {
+        await api(`/api/mensajes/${c.id}`, { method: "POST", body: { texto } });
+        inp.value = "";
+        mostrarError("msg-app", null);
+        await traer(true);
+      } catch (e) { mostrarError("msg-app", e); }
+      enviar.disabled = false;
+      inp.focus();
+    });
+
+    panelChat.replaceChildren(
+      el("div", { class: "chat-cab" }, avatar(c.nombres, true, c.foto), el("strong", {}, c.nombres)), caja, form);
+    pintarLista();
+    await traer(true);
+    if (!ultimoId) caja.append(el("p", { class: "muted vacio" }, "Aún no hay mensajes. ¡Saluda!"));
+    traerActivo = traer;
+    inp.focus();
+    actualizarBadge();
+  };
+
+  // Cada 4 s: trae mensajes nuevos del chat abierto y refresca la lista (no leidos, ultimo mensaje)
+  const tick = async () => {
+    if (document.hidden) return;
+    try { if (traerActivo) await traerActivo(); }
+    catch (e) { traerActivo = null; mostrarError("msg-app", e); }
+    try { convs = await api("/api/mensajes"); pintarLista(); } catch { /* se reintenta */ }
+  };
+
+  convs = await api("/api/mensajes");
+  if (tabActual !== "mensajes") return;           // el usuario ya cambio de pestana
+  pintarLista();
+  detenerSondeo();
+  sondeo = setInterval(tick, 4000);
+  if (abrirId) {
+    const c = convs.find((x) => x.id === abrirId);
+    if (c) await abrir(c);
+  }
 }
 
 /* ===================== Mi perfil ===================== */
