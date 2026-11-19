@@ -152,5 +152,28 @@ class TestCorreoCanonico(unittest.TestCase):
         self.assertEqual(n("sin-arroba"), "sin-arroba")
 
 
+class TestIdentidad(unittest.TestCase):
+    """Relacion de equivalencia: a ~ b  <=>  huella(a) = huella(b)."""
+
+    def test_normalizar_nombre(self):
+        n = validacion.normalizar_nombre
+        self.assertEqual(n("Ana  Pérez"), n("PEREZ ana"))     # tildes, mayusculas, espacios y orden
+        self.assertNotEqual(n("Ana Pérez"), n("Ana Pérez López"))
+
+    def test_huella_es_relacion_de_equivalencia(self):
+        h = validacion.huella_identidad
+        a, b, c = h("Ana  Pérez", "fisi_x"), h("PEREZ ana", "fisi_x"), h("ana perez", "fisi_x")
+        self.assertEqual(a, a)                                  # reflexiva
+        self.assertEqual((a == b), (b == a))                    # simetrica
+        self.assertTrue(a == b and b == c and a == c)           # transitiva
+        self.assertNotEqual(a, h("Ana Pérez", "med_y"))         # otra escuela = otra clase
+
+    def test_codigo_estudiante(self):
+        self.assertTrue(validacion.codigo_valido("20200123"))
+        self.assertTrue(validacion.codigo_valido(" 20200123 "))
+        for malo in ["2020012", "202001234", "2020012a", ""]:
+            self.assertFalse(validacion.codigo_valido(malo), malo)
+
+
 if __name__ == "__main__":
     unittest.main()

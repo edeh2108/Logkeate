@@ -15,6 +15,10 @@ db = client[DB_NAME]
 def crear_indices():
     """Indices que materializan las restricciones matematicas del modelo."""
     db.users.create_index("email", unique=True)                       # un correo = un vertice
+    # Una persona = una cuenta (clase de equivalencia). Parciales: las cuentas antiguas
+    # que aun no tienen estos campos no chocan entre si.
+    db.users.create_index("huella", unique=True, partialFilterExpression={"huella": {"$type": "string"}})
+    db.users.create_index("codigo", unique=True, partialFilterExpression={"codigo": {"$type": "string"}})
     db.friendships.create_index([("u", 1), ("v", 1)], unique=True)    # sin aristas paralelas
     db.friendships.create_index("v")
     db.friend_requests.create_index("par", unique=True)               # una solicitud por pareja

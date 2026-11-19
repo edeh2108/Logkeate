@@ -92,7 +92,8 @@ def resumen_relacion(me, doc):
             "bloqueado_por_mi": doc.get("bloqueado_por") == me}
 
 
-PROY = {"pass_hash": 0, "email": 0}
+# huella y codigo son datos internos: nunca salen en las respuestas de la API
+PROY = {"pass_hash": 0, "email": 0, "huella": 0, "codigo": 0}
 
 
 # ---------- paginas ----------
@@ -101,7 +102,7 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
-# ---------- autenticacion (logica proposicional) ----------
+# ---------- autenticacion (logica proposicional + relacion de equivalencia) ----------
 @app.post("/api/registro")
 def registro():
     d = datos()
@@ -129,17 +130,26 @@ def registro():
         raise ErrorApi("Escuela invalida")
     facultad = db.academic_units.find_one({"_id": escuela["parent_id"]})
 
+    # Una persona = una cuenta: misma clase de equivalencia (nombre canonico + escuela) o mismo codigo
+    codigo = str(d.get("codigo", "")).strip()
+    if not validacion.codigo_valido(codigo):
+        raise ErrorApi("El codigo de estudiante debe tener 8 digitos")
+    huella = validacion.huella_identidad(nombres, escuela["_id"])
+    if servicios.identidad_ya_registrada(huella, codigo):
+        raise ErrorApi("Ya existe una cuenta para esta persona", 409)
+
     try:
         r = db.users.insert_one({
             "email": email, "pass_hash": generate_password_hash(password),
             "nombres": nombres, "escuela_id": escuela["_id"], "escuela": escuela["nombre"],
             "facultad_id": facultad["_id"], "facultad": facultad.get("sigla", facultad["nombre"]),
             "ciclo": ciclo,
+            "huella": huella, "codigo": codigo,
             "intereses": lista_texto(d.get("intereses", []), str.lower),
             "creado": datetime.now(timezone.utc),
         })
     except DuplicateKeyError:
-        raise ErrorApi("Ese correo ya esta registrado", 409)
+        raise ErrorApi("Ya existe una cuenta con esos datos", 409)
     session.clear()
     session["uid"] = str(r.inserted_id)
     session.permanent = True
@@ -215,9 +225,20 @@ def editar_perfil():
             quitar["foto_id"] = ""
         if actual and actual != nueva:
             db.images.delete_one({"_id": actual, "owner": uid})      # no dejar fotos viejas huerfanas
+    # Cambiar nombre o escuela cambia la clase de equivalencia: no se puede evadir la regla editando el perfil
+    if "nombres" in poner or "escuela_id" in poner:
+        actual_u = db.users.find_one({"_id": uid}, {"nombres": 1, "escuela_id": 1})
+        h = validacion.huella_identidad(poner.get("nombres", actual_u["nombres"]),
+                                        poner.get("escuela_id", actual_u.get("escuela_id")))
+        if servicios.identidad_ya_registrada(h, excepto=uid):
+            raise ErrorApi("Ya existe una cuenta con ese nombre en esa escuela", 409)
+        poner["huella"] = h
     if not poner and not quitar:
         raise ErrorApi("No hay cambios para guardar")
-    db.users.update_one({"_id": uid}, {k: v for k, v in (("$set", poner), ("$unset", quitar)) if v})
+    try:
+        db.users.update_one({"_id": uid}, {k: v for k, v in (("$set", poner), ("$unset", quitar)) if v})
+    except DuplicateKeyError:
+        raise ErrorApi("Ya existe una cuenta con ese nombre en esa escuela", 409)
     if "nombres" in poner:                      # las publicaciones y comentarios guardan una copia del nombre
         db.posts.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
         db.comments.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})

@@ -76,3 +76,13 @@ def correo_ya_registrado(email: str) -> bool:
     (El indice unico de MongoDB sigue siendo la ultima barrera si dos registros chocan a la vez.)"""
     canon = validacion.normalizar_correo(email)
     return db.users.count_documents({"email": {"$in": [canon, str(email).strip().lower()]}}, limit=1) > 0
+
+
+def identidad_ya_registrada(huella, codigo=None, excepto=None) -> bool:
+    """True si ya hay una cuenta con la misma huella de identidad (o el mismo codigo de estudiante).
+    `excepto` = _id del propio usuario (para no chocar consigo mismo al editar el perfil)."""
+    condiciones = [{"huella": huella}] + ([{"codigo": codigo}] if codigo else [])
+    q = {"$or": condiciones}
+    if excepto is not None:
+        q["_id"] = {"$ne": excepto}
+    return db.users.count_documents(q, limit=1) > 0
