@@ -245,6 +245,31 @@ def editar_perfil():
     return me()
 
 
+# ---------- perfil de otra persona (ventana de perfil) ----------
+@app.get("/api/usuarios/<uid>")
+@login_required
+def ver_usuario(uid):
+    """Datos publicos de un usuario + relacion, intereses en comun y grados de separacion."""
+    otro = oid(uid)
+    u = db.users.find_one({"_id": otro}, PROY)
+    if not u:
+        raise ErrorApi("Usuario no encontrado", 404)
+    me_id = yo()
+    rel = servicios.relaciones_con(me_id).get(str(otro))
+    if rel and rel["estado"] == "BLOQUEADA" and rel.get("bloqueado_por") != me_id:
+        raise ErrorApi("Usuario no encontrado", 404)       # quien te bloqueo no es visible para ti
+    out = publico(u, resumen_relacion(me_id, rel))
+    if otro != me_id:
+        mios = (db.users.find_one({"_id": me_id}, {"intereses": 1}) or {}).get("intereses", [])
+        out["intereses_comunes"] = sorted(conjuntos.interseccion(mios, u.get("intereses", [])))
+        dist, camino = grafo.grados_de_separacion(me_id, otro, servicios.vecinos, max_prof=6)
+        out["grados"] = dist
+        if dist is not None:
+            nombres = {x["_id"]: x["nombres"] for x in db.users.find({"_id": {"$in": camino}}, {"nombres": 1})}
+            out["camino"] = [nombres.get(i, "?") for i in camino]
+    return jsonify(out)
+
+
 # ---------- buscador (algebra de Boole) ----------
 @app.post("/api/buscar")
 @login_required
@@ -444,7 +469,8 @@ def serializar_posts(docs):
     fotos = fotos_de([p["autor"] for p in docs])
     out = []
     for p in docs:
-        item = {"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_foto": fotos.get(p["autor"]),
+        item = {"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_id": str(p["autor"]),
+                "autor_foto": fotos.get(p["autor"]),
                 "texto": p.get("texto", ""),
                 "imagen": str(p["imagen_id"]) if p.get("imagen_id") else None,
                 "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0),

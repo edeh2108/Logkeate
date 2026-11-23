@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LogKeate · La red de San Marcos</title>
   <link rel="icon" type="image/png" href="/static/logo.png">
+  <script>
+    // Aplica el tema guardado antes de pintar (evita el parpadeo blanco)
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem("tema"); } catch (e) {}
+      if (!t) t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "oscuro" : "claro";
+      document.documentElement.dataset.tema = t;
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
@@ -20,6 +29,7 @@
     </aside>
 
     <section class="auth-panel">
+      <div class="auth-tema"><button type="button" class="tema-btn" title="Cambiar tema" aria-label="Cambiar entre modo claro y oscuro"></button></div>
       <div class="segmento" role="tablist">
         <button type="button" id="seg-login" class="activo">Iniciar sesión</button>
         <button type="button" id="seg-registro">Crear cuenta</button>
@@ -56,7 +66,10 @@
         <input id="q" type="search" placeholder="Buscar personas o grupos en LogKeate" aria-label="Buscar">
         <div id="sugerencias" class="sugerencias" hidden></div>
       </form>
-      <div class="usuario-top"><span id="yo"></span><button id="btn-logout" class="sec">Salir</button></div>
+      <div class="usuario-top">
+        <button type="button" class="tema-btn" title="Cambiar tema" aria-label="Cambiar entre modo claro y oscuro"></button>
+        <span id="yo"></span><button id="btn-logout" class="sec">Salir</button>
+      </div>
     </header>
 
     <div class="layout">
@@ -114,6 +127,14 @@
           <div id="vista-grupos"></div>
         </section>
       </main>
+    </div>
+  </div>
+
+  <!-- Ventana con el perfil de una persona -->
+  <div id="modal-perfil" class="modal-fondo" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Perfil">
+      <button type="button" id="modal-cerrar" class="icono-btn modal-x" aria-label="Cerrar">✕</button>
+      <div id="modal-contenido"></div>
     </div>
   </div>
 

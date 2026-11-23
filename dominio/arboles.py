@@ -7,6 +7,7 @@ def construir_arbol_comentarios(docs: list, likes=None, mios=None, fotos=None) -
     nodos = {
         d["_id"]: {
             "id": str(d["_id"]), "autor": d.get("autor_nombre", ""),
+            "autor_id": str(d["autor"]) if d.get("autor") else None,
             "texto": d["texto"], "fecha": d["creado"].isoformat(), "hijos": [],
             "likes": likes.get(d["_id"], 0), "yo_like": d["_id"] in mios,
             "autor_foto": fotos.get(d.get("autor")),
