@@ -33,10 +33,17 @@ function mostrarError(id, e) { $(id).textContent = e ? e.message : ""; }
 // Las fechas del servidor vienen en UTC sin "Z": se agrega para mostrarlas en hora local
 const fecha = (s) => new Date(/[zZ]|[+-]\d\d:\d\d$/.test(s) ? s : s + "Z").toLocaleString();
 
+// El arbol de escuelas casi nunca cambia: se pide una sola vez y se reutiliza
+let _arbolUnidades = null;
+async function arbolUnidades() {
+  if (!_arbolUnidades) _arbolUnidades = await api("/api/unidades-publicas");
+  return _arbolUnidades;
+}
+
 // Avatar con iniciales y color estable segun el nombre
 function avatar(nombre, peq = false, foto = null, grande = false) {
   const tam = (peq ? " peq" : "") + (grande ? " grande" : "");
-  if (foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${foto}`, alt: nombre });
+  if (foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${foto}`, alt: nombre, loading: "lazy" });
   const ini = (nombre || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
   let h = 0;
   for (const c of nombre || "") h = (h * 31 + c.charCodeAt(0)) % 360;
@@ -85,7 +92,7 @@ async function iniciar() {
   } catch {
     $("vista-auth").hidden = false;
     $("vista-app").hidden = true;
-    try { llenarEscuelas(await api("/api/unidades-publicas")); } catch (e) { mostrarError("msg-auth", e); }
+    try { llenarEscuelas(await arbolUnidades()); } catch (e) { mostrarError("msg-auth", e); }
   }
 }
 
@@ -153,8 +160,16 @@ $("modal-perfil").addEventListener("click", (ev) => { if (ev.target === $("modal
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && perfilAbiertoId) cerrarPerfil(); });
 
 // Botones segun el estado de la relacion (automata). `despues` se ejecuta al terminar la accion.
+// El boton se desactiva mientras se procesa (evita doble clic y da respuesta inmediata).
 function botonesRelacion(id, rel, despues) {
-  const btn = (txt, fn, clase = "") => el("button", { class: `mini ${clase}`, onclick: fn }, txt);
+  const btn = (txt, fn, clase = "") => {
+    const b = el("button", { class: `mini ${clase}` }, txt);
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await fn(); } finally { b.disabled = false; }
+    });
+    return b;
+  };
   const acc = (evento) => () => accionAmistad(id, evento, despues);
   const botones = [];
   switch (rel.estado) {
@@ -417,7 +432,7 @@ $("q").addEventListener("input", () => {
         el("button", { type: "submit", class: "sug todos" }, `Ver todos los resultados para “${q}”`));
       $("sugerencias").hidden = false;
     } catch { $("sugerencias").hidden = true; }
-  }, 250);
+  }, 350);
 });
 
 function construirFiltro() {
@@ -491,7 +506,7 @@ async function cargarAmigos() {
 /* ===================== Grupos (conjunto de miembros) ===================== */
 function avatarGrupo(g, peq = false, grande = false) {
   const tam = (peq ? " peq" : "") + (grande ? " grande" : "");
-  if (g.foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${g.foto}`, alt: g.nombre });
+  if (g.foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${g.foto}`, alt: g.nombre, loading: "lazy" });
   return el("span", { class: "avatar grupo" + tam }, "👥");
 }
 
@@ -656,12 +671,16 @@ async function cargarMensajes(abrirId = null) {
     actualizarBadge();
   };
 
-  // Cada 4 s: trae mensajes nuevos del chat abierto y refresca la lista (no leidos, ultimo mensaje)
+  // Cada 4 s: trae mensajes nuevos del chat abierto. La lista de conversaciones se refresca cada 12 s
+  // (cada 3er ciclo) para no duplicar las consultas a la base de datos.
+  let ciclo = 0;
   const tick = async () => {
     if (document.hidden) return;
     try { if (traerActivo) await traerActivo(); }
     catch (e) { traerActivo = null; mostrarError("msg-app", e); }
-    try { convs = await api("/api/mensajes"); pintarLista(); } catch { /* se reintenta */ }
+    if (++ciclo % 3 === 0) {
+      try { convs = await api("/api/mensajes"); pintarLista(); } catch { /* se reintenta */ }
+    }
   };
 
   convs = await api("/api/mensajes");
@@ -677,7 +696,7 @@ async function cargarMensajes(abrirId = null) {
 
 /* ===================== Mi perfil ===================== */
 async function cargarPerfil() {
-  const [u, arbol] = await Promise.all([api("/api/me"), api("/api/unidades-publicas")]);
+  const [u, arbol] = await Promise.all([api("/api/me"), arbolUnidades()]);
   const campo = (etiqueta, control) => el("label", {}, etiqueta, control);
   const nombres = el("input", { value: u.nombres, maxlength: "80", required: "" });
   const bio = el("textarea", { maxlength: "160", placeholder: "Cuéntale a San Marcos quién eres (máx. 160 caracteres)" });

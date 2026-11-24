@@ -22,6 +22,8 @@ def crear_indices():
     db.friendships.create_index([("u", 1), ("v", 1)], unique=True)    # sin aristas paralelas
     db.friendships.create_index("v")
     db.friend_requests.create_index("par", unique=True)               # una solicitud por pareja
+    db.friend_requests.create_index("emisor")                         # relaciones_con(): buscar por emisor
+    db.friend_requests.create_index("receptor")                       # ... o por receptor
     db.academic_units.create_index("path")
     db.comments.create_index([("post_id", 1), ("creado", 1)])
     db.posts.create_index([("creado", -1)])
@@ -30,6 +32,7 @@ def crear_indices():
     db.likes.create_index([("tipo", 1), ("obj", 1), ("user", 1)], unique=True)   # un usuario, un "me gusta" por objeto
     db.groups.create_index("nombre_norm", unique=True)
     db.group_members.create_index([("grupo_id", 1), ("user", 1)], unique=True)   # pertenencia = par (grupo, usuario) sin repetir
+    db.group_members.create_index("user")
     db.users.create_index("nombres")
     db.messages.create_index([("par", 1), ("_id", 1)])                 # historial de una conversacion
     db.messages.create_index([("receptor", 1), ("leido", 1)])          # contador de no leidos

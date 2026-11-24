@@ -61,6 +61,16 @@ def vecinos(uid) -> list:
     return [d["v"] if d["u"] == uid else d["u"] for d in docs]
 
 
+def grafo_amistades() -> dict:
+    """Lista de adyacencia de TODA la red con UNA sola consulta: {vertice: [amigos]}.
+    El BFS trabaja luego en memoria, en vez de hacer una consulta a la BD por cada vertice visitado."""
+    ady = {}
+    for d in db.friendships.find({}, {"u": 1, "v": 1, "_id": 0}):
+        ady.setdefault(d["u"], []).append(d["v"])
+        ady.setdefault(d["v"], []).append(d["u"])
+    return ady
+
+
 def relaciones_con(me) -> dict:
     """{str(otro_id): doc_solicitud} para todas las solicitudes donde participa `me`."""
     out = {}

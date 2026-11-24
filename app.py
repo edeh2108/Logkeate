@@ -262,7 +262,8 @@ def ver_usuario(uid):
     if otro != me_id:
         mios = (db.users.find_one({"_id": me_id}, {"intereses": 1}) or {}).get("intereses", [])
         out["intereses_comunes"] = sorted(conjuntos.interseccion(mios, u.get("intereses", [])))
-        dist, camino = grafo.grados_de_separacion(me_id, otro, servicios.vecinos, max_prof=6)
+        ady = servicios.grafo_amistades()               # una sola consulta; el BFS corre en memoria
+        dist, camino = grafo.grados_de_separacion(me_id, otro, lambda v: ady.get(v, ()), max_prof=6)
         out["grados"] = dist
         if dist is not None:
             nombres = {x["_id"]: x["nombres"] for x in db.users.find({"_id": {"$in": camino}}, {"nombres": 1})}
@@ -358,9 +359,10 @@ def grados(otro):
     d = db.users.find_one({"_id": destino}, {"nombres": 1})
     if not d:
         raise ErrorApi("Usuario no encontrado", 404)
-    dist, camino = grafo.grados_de_separacion(yo(), destino, servicios.vecinos, max_prof=6)
+    ady = servicios.grafo_amistades()
+    dist, camino = grafo.grados_de_separacion(yo(), destino, lambda v: ady.get(v, ()), max_prof=6)
     if dist is None:
-        return jsonify(distancia=None, camino=[], mensaje="Sin conexion (hasta 6 grados)")
+        return jsonify(distancia=None, camino=[], mensaje="Aun no estan conectados por amigos")
     nombres = {u["_id"]: u["nombres"] for u in db.users.find({"_id": {"$in": camino}}, {"nombres": 1})}
     return jsonify(distancia=dist, camino=[nombres.get(i, "?") for i in camino])
 
@@ -465,8 +467,12 @@ def likes_de(tipo, ids):
 
 
 def serializar_posts(docs):
-    cuenta, mios = likes_de("post", [p["_id"] for p in docs])
+    ids = [p["_id"] for p in docs]
+    cuenta, mios = likes_de("post", ids)
     fotos = fotos_de([p["autor"] for p in docs])
+    # Una sola consulta agrupada en vez de contar los comentarios de cada publicacion por separado
+    n_coment = {d["_id"]: d["n"] for d in db.comments.aggregate([
+        {"$match": {"post_id": {"$in": ids}}}, {"$group": {"_id": "$post_id", "n": {"$sum": 1}}}])}
     out = []
     for p in docs:
         item = {"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_id": str(p["autor"]),
@@ -475,7 +481,7 @@ def serializar_posts(docs):
                 "imagen": str(p["imagen_id"]) if p.get("imagen_id") else None,
                 "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0),
                 "yo_like": p["_id"] in mios,
-                "n_comentarios": db.comments.count_documents({"post_id": p["_id"]})}
+                "n_comentarios": n_coment.get(p["_id"], 0)}
         out.append(item)
     return out
 
@@ -587,20 +593,30 @@ def es_admin_grupo(g, me_id):
     return db.group_members.find_one({"grupo_id": g["_id"], "user": me_id, "rol": "admin"}, {"_id": 1}) is not None
 
 
+def resumenes_grupos(grupos_docs, me_id):
+    """Resumen de VARIOS grupos con 2 consultas en total (antes eran 3 por grupo)."""
+    ids = [g["_id"] for g in grupos_docs]
+    miembros = {d["_id"]: d["n"] for d in db.group_members.aggregate([
+        {"$match": {"grupo_id": {"$in": ids}}}, {"$group": {"_id": "$grupo_id", "n": {"$sum": 1}}}])}
+    mios = {d["grupo_id"]: d.get("rol") for d in
+            db.group_members.find({"grupo_id": {"$in": ids}, "user": me_id}, {"grupo_id": 1, "rol": 1})}
+    return [{"id": str(g["_id"]), "nombre": g["nombre"], "descripcion": g.get("descripcion", ""),
+             "foto": str(g["foto_id"]) if g.get("foto_id") else None,
+             "puedo_editar": g["creador"] == me_id or mios.get(g["_id"]) == "admin",
+             "miembros": miembros.get(g["_id"], 0),
+             "soy_miembro": g["_id"] in mios,
+             "soy_creador": g["creador"] == me_id} for g in grupos_docs]
+
+
 def resumen_grupo(g, me_id):
-    return {"id": str(g["_id"]), "nombre": g["nombre"], "descripcion": g.get("descripcion", ""),
-            "foto": str(g["foto_id"]) if g.get("foto_id") else None,
-            "puedo_editar": es_admin_grupo(g, me_id),
-            "miembros": db.group_members.count_documents({"grupo_id": g["_id"]}),
-            "soy_miembro": db.group_members.find_one({"grupo_id": g["_id"], "user": me_id}, {"_id": 1}) is not None,
-            "soy_creador": g["creador"] == me_id}
+    return resumenes_grupos([g], me_id)[0]
 
 
 @app.get("/api/grupos")
 @login_required
 def grupos():
-    me_id = yo()
-    return jsonify([resumen_grupo(g, me_id) for g in db.groups.find().sort("creado", -1).limit(100)])
+    docs = list(db.groups.find().sort("creado", -1).limit(100))
+    return jsonify(resumenes_grupos(docs, yo()))
 
 
 @app.post("/api/grupos")
@@ -744,7 +760,9 @@ def historial(otro):
         docs = list(db.messages.find({"par": par, "_id": {"$gt": oid(despues)}}).sort("_id", 1).limit(100))
     else:
         docs = list(db.messages.find({"par": par}).sort("_id", -1).limit(50))[::-1]
-    db.messages.update_many({"par": par, "receptor": yo(), "leido": False}, {"$set": {"leido": True}})
+    # Solo escribe en la BD si realmente hay mensajes sin leer (la mayoria de los sondeos no tienen)
+    if any(m["receptor"] == yo() and not m.get("leido") for m in docs):
+        db.messages.update_many({"par": par, "receptor": yo(), "leido": False}, {"$set": {"leido": True}})
     return jsonify([json_mensaje(m) for m in docs])
 
 
@@ -782,7 +800,7 @@ def buscar_rapido():
                        {"_id": {"$ne": yo_id}}, {"_id": {"$nin": bloqueadores}}]}
     personas = [publico(u, resumen_relacion(yo_id, rels.get(str(u["_id"]))))
                 for u in db.users.find(filtro, PROY).limit(20)]
-    return jsonify(personas=personas, grupos=[resumen_grupo(g, yo_id) for g in db.groups.find({"nombre": rx}).limit(10)])
+    return jsonify(personas=personas, grupos=resumenes_grupos(list(db.groups.find({"nombre": rx}).limit(10)), yo_id))
 
 
 if __name__ == "__main__":
