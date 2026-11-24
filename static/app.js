@@ -173,6 +173,15 @@ function botonesRelacion(id, rel, despues) {
   return botones;
 }
 
+// Texto amigable para cada estado del automata (el estado interno no cambia)
+const ETIQUETA_ESTADO = {
+  INEXISTENTE: "No son amigos",
+  PENDIENTE: "Solicitud pendiente",
+  ACEPTADA: "Amigos",
+  RECHAZADA: "Solicitud rechazada",
+  BLOQUEADA: "Bloqueado",
+};
+
 async function abrirPerfil(id) {
   if (!id) return;
   if (id === yoId) { await irA("perfil").catch((e) => mostrarError("msg-app", e)); return; }
@@ -186,7 +195,7 @@ async function abrirPerfil(id) {
         el("div", {}, el("h2", {}, u.nombres),
           el("p", { class: "muted" }, u.escuela || "—"),
           el("p", { class: "muted" }, `${u.facultad || "—"} · ciclo ${u.ciclo ?? "—"}`),
-          el("span", { class: `estado ${rel.estado}` }, rel.estado))),
+          el("span", { class: `estado ${rel.estado}` }, ETIQUETA_ESTADO[rel.estado] || rel.estado))),
       bloque("Sobre mí", el("p", { class: u.bio ? "" : "muted" }, u.bio || "Sin descripción.")),
       bloque("Intereses", ...(u.intereses.length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))]
         : [el("p", { class: "muted" }, "Sin intereses.")])),
@@ -195,9 +204,11 @@ async function abrirPerfil(id) {
       partes.push(bloque("Intereses en común", u.intereses_comunes.length
         ? el("div", {}, ...u.intereses_comunes.map((i) => el("span", { class: "etiqueta" }, i)))
         : el("p", { class: "muted" }, "Ninguno por ahora.")));
-      partes.push(bloque("Grados de separación", el("p", { class: u.grados === null ? "muted" : "" },
-        u.grados === null ? "Sin conexión (hasta 6 grados)"
-          : u.grados === 1 ? "Son amigos directos" : `${u.grados} (${u.camino.join(" → ")})`)));
+      const conexion = u.grados === null ? "Aún no están conectados por amigos."
+        : u.grados === 1 ? "Son amigos directos."
+        : u.grados === 2 ? `Tienen un amigo en común: ${u.camino[1]}.`
+        : `Los separan ${u.grados} pasos: ${u.camino.join(" → ")}.`;
+      partes.push(bloque("Conexión", el("p", { class: u.grados === null ? "muted" : "" }, conexion)));
     }
     partes.push(el("div", { class: "modal-acciones" }, ...botonesRelacion(id, rel, () => abrirPerfil(id))));
     $("modal-contenido").replaceChildren(...partes);
