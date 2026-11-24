@@ -73,6 +73,24 @@ function aplicarFuente(px) {
 }
 document.documentElement.style.fontSize = fuentePx + "px";
 
+/* ===================== Tema claro / oscuro (Configuracion) ===================== */
+const TEMAS = ["claro", "oscuro", "auto"];
+let temaPref = "auto";
+try {
+  const t = localStorage.getItem("tema");
+  if (TEMAS.includes(t)) temaPref = t;
+} catch { /* localStorage no disponible */ }
+const mqOscuro = window.matchMedia("(prefers-color-scheme: dark)");
+
+function aplicarTema(pref = temaPref) {
+  temaPref = pref;
+  const oscuro = pref === "oscuro" || (pref === "auto" && mqOscuro.matches);
+  document.documentElement.dataset.tema = oscuro ? "oscuro" : "claro";
+  try { localStorage.setItem("tema", pref); } catch { /* ignorar */ }
+}
+mqOscuro.addEventListener("change", () => { if (temaPref === "auto") aplicarTema(); });
+aplicarTema();
+
 // Alternar entre iniciar sesion y crear cuenta
 function mostrarForm(registro) {
   $("form-login").hidden = registro;
@@ -816,7 +834,16 @@ function cargarConfig() {
   const mas = el("button", { type: "button", class: "sec mini", "aria-label": "Aumentar letra", onclick: () => poner(fuentePx + 1) }, "A+");
   const reset = el("button", { type: "button", class: "mini", onclick: () => poner(FUENTE_DEF) }, "Restablecer");
 
+  const botonesTema = TEMAS.map((t) => el("button", { type: "button", class: t === temaPref ? "activo" : "",
+    onclick: () => {
+      aplicarTema(t);
+      botonesTema.forEach((b, i) => b.classList.toggle("activo", TEMAS[i] === t));
+    } }, { claro: "Claro", oscuro: "Oscuro", auto: "Automático" }[t]));
+
   $("vista-config").replaceChildren(
+    el("div", { class: "card" }, el("h2", {}, "Apariencia"),
+      el("p", { class: "muted" }, "Elige el tema de la aplicación. «Automático» sigue el modo de tu dispositivo."),
+      el("div", { class: "segmento tres" }, ...botonesTema)),
     el("div", { class: "card" }, el("h2", {}, "Tamaño de letra"),
       el("p", { class: "muted" }, "Ajusta el tamaño del texto de toda la aplicación. Se guarda en este navegador."),
       el("div", { class: "config-fila" }, menos, rango, mas, valor),
