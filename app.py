@@ -243,6 +243,7 @@ def editar_perfil():
         db.posts.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
         db.comments.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
         db.stories.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
+        db.story_comments.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
     return me()
 
 
@@ -579,14 +580,20 @@ def like(tipo, obj_id):
 
 # ---------- historias (duran 24 horas; las ven yo y mis amigos) ----------
 HORAS_HISTORIA = 24
+REACCIONES = ("\u2764\ufe0f", "\U0001F602", "\U0001F62E", "\U0001F622", "\U0001F44F", "\U0001F525")
 
 
 def limpiar_historias_vencidas():
-    """Borra las historias que ya pasaron las 24 h junto con su imagen."""
-    vencidas = list(db.stories.find({"expira": {"$lte": datetime.now(timezone.utc)}}, {"imagen_id": 1}))
+    """Respaldo del indice TTL: borra al instante lo vencido (historias, comentarios, reacciones e imagenes)."""
+    ahora = datetime.now(timezone.utc)
+    vencidas = list(db.stories.find({"expira": {"$lte": ahora}}, {"imagen_id": 1}))
     if vencidas:
+        ids = [s["_id"] for s in vencidas]
+        db.story_comments.delete_many({"historia_id": {"$in": ids}})
+        db.story_reactions.delete_many({"historia_id": {"$in": ids}})
         db.images.delete_many({"_id": {"$in": [s["imagen_id"] for s in vencidas]}})
-        db.stories.delete_many({"_id": {"$in": [s["_id"] for s in vencidas]}})
+        db.stories.delete_many({"_id": {"$in": ids}})
+    db.images.delete_many({"expira": {"$lte": ahora}})      # imagenes de historias que ya no tienen documento
 
 
 @app.get("/api/historias")
@@ -621,8 +628,10 @@ def crear_historia():
     texto = str(d.get("texto", "")).strip()[:150]
     u = db.users.find_one({"_id": yo()}, {"nombres": 1})
     ahora = datetime.now(timezone.utc)
+    expira = ahora + timedelta(hours=HORAS_HISTORIA)
+    db.images.update_one({"_id": img}, {"$set": {"expira": expira}})     # la imagen tambien caduca (indice TTL)
     db.stories.insert_one({"autor": u["_id"], "autor_nombre": u["nombres"], "imagen_id": img,
-                           "texto": texto, "creado": ahora, "expira": ahora + timedelta(hours=HORAS_HISTORIA)})
+                           "texto": texto, "creado": ahora, "expira": expira})
     return jsonify(ok=True), 201
 
 
@@ -634,9 +643,87 @@ def borrar_historia(sid):
         raise ErrorApi("Historia no encontrada", 404)
     if s["autor"] != yo():
         raise ErrorApi("Solo el autor puede eliminar su historia", 403)
+    db.story_comments.delete_many({"historia_id": s["_id"]})
+    db.story_reactions.delete_many({"historia_id": s["_id"]})
     db.stories.delete_one({"_id": s["_id"]})
     db.images.delete_one({"_id": s["imagen_id"], "owner": yo()})
     return jsonify(ok=True)
+
+
+def historia_visible(sid):
+    """La historia debe seguir vigente y ser mia o de un amigo."""
+    s = db.stories.find_one({"_id": oid(sid), "expira": {"$gt": datetime.now(timezone.utc)}})
+    if not s:
+        raise ErrorApi("Historia no encontrada o ya expiro", 404)
+    if s["autor"] != yo() and s["autor"] not in servicios.vecinos(yo()):
+        raise ErrorApi("Solo puedes ver historias tuyas o de tus amigos", 403)
+    return s
+
+
+def interacciones_historia(s):
+    cuenta = {d["_id"]: d["n"] for d in db.story_reactions.aggregate([
+        {"$match": {"historia_id": s["_id"]}}, {"$group": {"_id": "$emoji", "n": {"$sum": 1}}}])}
+    mia = db.story_reactions.find_one({"historia_id": s["_id"], "user": yo()}, {"emoji": 1})
+    coms = list(db.story_comments.find({"historia_id": s["_id"]}).sort("creado", 1).limit(100))
+    return {"reacciones": cuenta, "mia": mia["emoji"] if mia else None,
+            "comentarios": [{"id": str(c["_id"]), "autor": c["autor_nombre"], "texto": c["texto"],
+                             "fecha": c["creado"].isoformat(),
+                             "puedo_borrar": c["autor"] == yo() or s["autor"] == yo()} for c in coms]}
+
+
+@app.get("/api/historias/<sid>/interacciones")
+@login_required
+def ver_interacciones(sid):
+    return jsonify(interacciones_historia(historia_visible(sid)))
+
+
+@app.post("/api/historias/<sid>/reaccion")
+@login_required
+def reaccionar_historia(sid):
+    """Una reaccion por persona: repetir el mismo emoji la quita; otro emoji la reemplaza."""
+    s = historia_visible(sid)
+    emoji = str(datos().get("emoji", ""))
+    if emoji not in REACCIONES:
+        raise ErrorApi("Reaccion no permitida")
+    clave = {"historia_id": s["_id"], "user": yo()}
+    actual = db.story_reactions.find_one(clave)
+    if actual and actual["emoji"] == emoji:
+        db.story_reactions.delete_one(clave)
+    else:
+        try:
+            db.story_reactions.update_one(
+                clave, {"$set": {"emoji": emoji, "creado": datetime.now(timezone.utc), "expira": s["expira"]}},
+                upsert=True)
+        except DuplicateKeyError:
+            pass
+    return jsonify(interacciones_historia(s))
+
+
+@app.post("/api/historias/<sid>/comentarios")
+@login_required
+def comentar_historia(sid):
+    s = historia_visible(sid)
+    texto = str(datos().get("texto", "")).strip()
+    if not 1 <= len(texto) <= 200:
+        raise ErrorApi("El comentario debe tener entre 1 y 200 caracteres")
+    u = db.users.find_one({"_id": yo()}, {"nombres": 1})
+    db.story_comments.insert_one({"historia_id": s["_id"], "autor": u["_id"], "autor_nombre": u["nombres"],
+                                  "texto": texto, "creado": datetime.now(timezone.utc), "expira": s["expira"]})
+    return jsonify(interacciones_historia(s)), 201
+
+
+@app.delete("/api/historias/<sid>/comentarios/<cid>")
+@login_required
+def borrar_comentario_historia(sid, cid):
+    """Lo borra su autor o el dueño de la historia."""
+    s = historia_visible(sid)
+    c = db.story_comments.find_one({"_id": oid(cid), "historia_id": s["_id"]})
+    if not c:
+        raise ErrorApi("Comentario no encontrado", 404)
+    if c["autor"] != yo() and s["autor"] != yo():
+        raise ErrorApi("No puedes eliminar este comentario", 403)
+    db.story_comments.delete_one({"_id": c["_id"]})
+    return jsonify(interacciones_historia(s))
 
 
 # ---------- grupos (un grupo es el CONJUNTO de sus miembros) ----------
@@ -750,8 +837,10 @@ def exigir_amistad(otro_id):
 
 
 def json_mensaje(m):
-    return {"id": str(m["_id"]), "mio": m["emisor"] == yo(), "texto": m["texto"],
-            "fecha": m["creado"].isoformat()}
+    eliminado = bool(m.get("eliminado"))
+    return {"id": str(m["_id"]), "mio": m["emisor"] == yo(), "texto": "" if eliminado else m["texto"],
+            "fecha": m["creado"].isoformat(), "editado": bool(m.get("editado")) and not eliminado,
+            "eliminado": eliminado}
 
 
 @app.get("/api/mensajes")
@@ -762,10 +851,11 @@ def conversaciones():
     amigos_ids = servicios.vecinos(me_id)
     pares = {servicios.clave_par(me_id, a): a for a in amigos_ids}
     ultimos = {d["_id"]: d["m"] for d in db.messages.aggregate([
-        {"$match": {"par": {"$in": list(pares)}}}, {"$sort": {"_id": -1}},
+        {"$match": {"par": {"$in": list(pares)}, "borrado_para": {"$ne": me_id}}}, {"$sort": {"_id": -1}},
         {"$group": {"_id": "$par", "m": {"$first": "$$ROOT"}}}])}
     sin_leer = {d["_id"]: d["n"] for d in db.messages.aggregate([
-        {"$match": {"receptor": me_id, "leido": False, "emisor": {"$in": amigos_ids}}},
+        {"$match": {"receptor": me_id, "leido": False, "emisor": {"$in": amigos_ids},
+                    "eliminado": {"$ne": True}, "borrado_para": {"$ne": me_id}}},
         {"$group": {"_id": "$emisor", "n": {"$sum": 1}}}])}
     users = {u["_id"]: u for u in db.users.find({"_id": {"$in": amigos_ids}}, {"nombres": 1, "foto_id": 1})}
     out = []
@@ -776,7 +866,8 @@ def conversaciones():
         m = ultimos.get(par)
         out.append({"id": str(a), "nombres": u["nombres"],
                     "foto": str(u["foto_id"]) if u.get("foto_id") else None,
-                    "ultimo": (("Tú: " if m["emisor"] == me_id else "") + m["texto"])[:60] if m else "",
+                    "ultimo": (("Tú: " if m["emisor"] == me_id else "")
+                             + ("Se eliminó este mensaje" if m.get("eliminado") else m["texto"]))[:60] if m else "",
                     "fecha": m["creado"].isoformat() if m else None,
                     "no_leidos": sin_leer.get(a, 0)})
     out.sort(key=lambda c: c["nombres"].lower())
@@ -788,7 +879,8 @@ def conversaciones():
 @login_required
 def mensajes_no_leidos():
     total = db.messages.count_documents(
-        {"receptor": yo(), "leido": False, "emisor": {"$in": servicios.vecinos(yo())}})
+        {"receptor": yo(), "leido": False, "emisor": {"$in": servicios.vecinos(yo())},
+         "eliminado": {"$ne": True}, "borrado_para": {"$ne": yo()}})
     return jsonify(total=total)
 
 
@@ -800,10 +892,11 @@ def historial(otro):
     exigir_amistad(otro_id)
     par = servicios.clave_par(yo(), otro_id)
     despues = request.args.get("despues")
+    visibles = {"par": par, "borrado_para": {"$ne": yo()}}          # lo que borre "para mi" no se ve
     if despues:
-        docs = list(db.messages.find({"par": par, "_id": {"$gt": oid(despues)}}).sort("_id", 1).limit(100))
+        docs = list(db.messages.find({**visibles, "_id": {"$gt": oid(despues)}}).sort("_id", 1).limit(100))
     else:
-        docs = list(db.messages.find({"par": par}).sort("_id", -1).limit(50))[::-1]
+        docs = list(db.messages.find(visibles).sort("_id", -1).limit(50))[::-1]
     db.messages.update_many({"par": par, "receptor": yo(), "leido": False}, {"$set": {"leido": True}})
     return jsonify([json_mensaje(m) for m in docs])
 
@@ -824,6 +917,70 @@ def enviar_mensaje(otro):
     db.messages.insert_one({"par": servicios.clave_par(yo(), otro_id), "emisor": yo(), "receptor": otro_id,
                             "texto": texto, "creado": ahora, "leido": False})
     return jsonify(ok=True), 201
+
+
+@app.get("/api/mensajes/<otro>/cambios")
+@login_required
+def cambios_mensajes(otro):
+    """Mensajes editados o eliminados desde `desde` (asi el otro usuario ve los cambios en vivo).
+    Sin `desde` solo devuelve la hora del servidor, que sirve como punto de partida."""
+    otro_id = oid(otro)
+    exigir_amistad(otro_id)
+    ahora = datetime.now(timezone.utc)                # se toma ANTES de consultar para no perder cambios
+    desde = request.args.get("desde")
+    if not desde:
+        return jsonify(ahora=ahora.isoformat(), cambios=[])
+    try:
+        t = datetime.fromisoformat(desde)
+    except ValueError:
+        raise ErrorApi("Fecha invalida")
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    docs = db.messages.find({"par": servicios.clave_par(yo(), otro_id), "modificado": {"$gt": t},
+                             "borrado_para": {"$ne": yo()}}).limit(100)
+    return jsonify(ahora=ahora.isoformat(), cambios=[json_mensaje(m) for m in docs])
+
+
+def mensaje_del_chat(otro_id, mid):
+    exigir_amistad(otro_id)
+    m = db.messages.find_one({"_id": oid(mid), "par": servicios.clave_par(yo(), otro_id)})
+    if not m or yo() in m.get("borrado_para", []):
+        raise ErrorApi("Mensaje no encontrado", 404)
+    return m
+
+
+@app.put("/api/mensajes/<otro>/<mid>")
+@login_required
+def editar_mensaje(otro, mid):
+    m = mensaje_del_chat(oid(otro), mid)
+    if m["emisor"] != yo():
+        raise ErrorApi("Solo puedes editar tus propios mensajes", 403)
+    if m.get("eliminado"):
+        raise ErrorApi("No se puede editar un mensaje eliminado", 409)
+    texto = str(datos().get("texto", "")).strip()
+    if not 1 <= len(texto) <= MAX_MSG:
+        raise ErrorApi(f"El mensaje debe tener entre 1 y {MAX_MSG} caracteres")
+    db.messages.update_one({"_id": m["_id"]},
+                           {"$set": {"texto": texto, "editado": True, "modificado": datetime.now(timezone.utc)}})
+    return jsonify(json_mensaje(db.messages.find_one({"_id": m["_id"]})))
+
+
+@app.delete("/api/mensajes/<otro>/<mid>")
+@login_required
+def borrar_mensaje(otro, mid):
+    """?para=mi  -> solo desaparece para mi.  ?para=todos -> solo el emisor; queda 'Se eliminó este mensaje'."""
+    m = mensaje_del_chat(oid(otro), mid)
+    para = request.args.get("para", "mi")
+    if para == "todos":
+        if m["emisor"] != yo():
+            raise ErrorApi("Solo puedes eliminar para todos tus propios mensajes", 403)
+        db.messages.update_one({"_id": m["_id"]},
+                               {"$set": {"eliminado": True, "texto": "", "modificado": datetime.now(timezone.utc)}})
+    elif para == "mi":
+        db.messages.update_one({"_id": m["_id"]}, {"$addToSet": {"borrado_para": yo()}})
+    else:
+        raise ErrorApi("Opcion invalida")
+    return jsonify(ok=True)
 
 
 # ---------- buscador rapido (personas y grupos) ----------

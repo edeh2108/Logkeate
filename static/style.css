@@ -227,12 +227,40 @@ table.tv tr.ok td { background: var(--verde-bg); font-weight: 700; }
 .visor-cab .espacio { flex: 1; }
 .visor-cab .mini { margin: 0; }
 .visor-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; z-index: 1; }
-.visor-texto { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; padding: 2.5rem 1rem 1.2rem; z-index: 2; color: #fff; text-align: center; background: linear-gradient(transparent, rgba(0, 0, 0, .75)); overflow-wrap: anywhere; }
+.visor-texto { position: absolute; left: 0; right: 0; top: 4.4rem; margin: 0; padding: .6rem 1rem 1.6rem; z-index: 2; color: #fff; text-align: center; background: linear-gradient(rgba(0, 0, 0, .6), transparent); overflow-wrap: anywhere; }
 .visor-zona { position: absolute; top: 4.2rem; bottom: 0; width: 50%; z-index: 2; background: transparent; border-radius: 0; padding: 0; margin: 0; }
 .visor-zona:hover { background: transparent; }
 .visor-zona.izq { left: 0; }
 .visor-zona.der { right: 0; }
 .visor-cab, .visor-barras { position: relative; }
+
+/* ---------- historias: reacciones y comentarios ---------- */
+.visor.pausa .visor-barras span.actual::after { animation-play-state: paused; }
+.visor-pie { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; display: grid; gap: .45rem; padding: 1.6rem .7rem .8rem; background: linear-gradient(transparent, rgba(0, 0, 0, .88) 35%); color: #fff; }
+.visor-reacc { display: flex; gap: .3rem; justify-content: center; flex-wrap: wrap; }
+.reacc { display: inline-flex; align-items: center; gap: .25rem; margin: 0; padding: .2rem .55rem; border-radius: 999px; font-size: 1.1rem; background: rgba(255, 255, 255, .14); color: #fff; }
+.reacc:hover { background: rgba(255, 255, 255, .26); }
+.reacc.activa { background: rgba(255, 255, 255, .34); box-shadow: inset 0 0 0 2px var(--oro); }
+.reacc small { font-size: .75rem; }
+.visor-coment { list-style: none; margin: 0; padding: 0 .2rem; max-height: 6.5rem; overflow-y: auto; display: grid; gap: .2rem; font-size: .85rem; }
+.visor-coment .x { background: transparent; color: #ddd; padding: 0 .35rem; margin: 0 0 0 .3rem; font-size: .8rem; }
+.visor-form { display: flex; gap: .4rem; align-items: center; }
+.visor-form input { background: rgba(255, 255, 255, .12); color: #fff; border-color: rgba(255, 255, 255, .35); }
+.visor-form input::placeholder { color: #ccc; }
+.visor-form .icono-btn { background: transparent; color: #fff; border-color: rgba(255, 255, 255, .35); }
+.visor-form .mini { margin: 0; }
+.visor-form .emoji-pop { top: auto; bottom: calc(100% + 6px); right: 0; left: auto; }
+
+/* ---------- mensajes: editar y eliminar ---------- */
+.burbuja .msg-pie { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+.msg-opc { background: transparent; color: inherit; margin: 0; padding: 0 .35rem; font-size: 1.1rem; line-height: 1.2; opacity: .65; border-radius: 6px; }
+.msg-opc:hover { background: rgba(127, 127, 127, .28); opacity: 1; }
+.msg-menu { display: grid; gap: 2px; margin-top: .3rem; padding: .25rem; background: var(--blanco); color: var(--texto); border: 1px solid var(--linea); border-radius: 10px; }
+.msg-menu button { background: transparent; color: var(--texto); margin: 0; padding: .3rem .6rem; border-radius: 8px; text-align: left; font-size: .85rem; font-weight: 400; }
+.msg-menu button:hover { background: var(--vino-claro); }
+.msg-borrado { font-style: italic; opacity: .75; }
+.msg-edit { display: flex; gap: .4rem; margin-top: .3rem; }
+.burbuja input { min-width: 14rem; color: var(--texto); }
 
 /* ---------- configuracion ---------- */
 .segmento.tres { grid-template-columns: repeat(3, 1fr); max-width: 420px; }

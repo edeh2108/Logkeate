@@ -193,6 +193,7 @@ function botonEmoji(campo) {
 }
 document.addEventListener("click", (ev) => {
   if (!ev.target.closest(".emoji-wrap")) document.querySelectorAll(".emoji-pop").forEach((p) => (p.hidden = true));
+  if (!ev.target.closest(".msg-wrap")) document.querySelectorAll(".msg-menu").forEach((p) => (p.hidden = true));
   if (!ev.target.closest(".buscador")) $("sugerencias").hidden = true;
 });
 
@@ -275,7 +276,10 @@ function nuevaHistoria(f) {
     texto, msg, el("div", { class: "barra" }, ok, cancelar)));
 }
 
-// Visor a pantalla completa: avanza solo cada 5 s; toca la derecha/izquierda para cambiar
+// Visor a pantalla completa: avanza solo cada 5 s; toca la derecha/izquierda para cambiar.
+// Abajo: reacciones con emojis y comentarios (al escribir, la historia se detiene).
+const REACCIONES = ["\u2764\ufe0f", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F44F}", "\u{1F525}"];
+
 function verHistorias(grupos, gi) {
   let si = 0, timer = null, cerrar;
   const caja = el("div", { class: "visor" });
@@ -299,9 +303,40 @@ function verHistorias(grupos, gi) {
       await pintarHistorias();
     } catch (e) { mostrarError("msg-app", e); }
   };
+  const pausar = () => { clearTimeout(timer); caja.classList.add("pausa"); };
+
+  function pintarInteracciones(pie, h, d) {
+    const accion = (promesa) => promesa.then((nuevo) => pintarInteracciones(pie, h, nuevo))
+      .catch((e) => mostrarError("msg-app", e));
+
+    const reacciones = el("div", { class: "visor-reacc" }, ...REACCIONES.map((emo) => {
+      const n = d.reacciones[emo] || 0, mia = d.mia === emo;
+      return el("button", { type: "button", class: "reacc" + (mia ? " activa" : ""), "aria-pressed": String(mia),
+        "aria-label": `Reaccionar con ${emo}`,
+        onclick: () => accion(api(`/api/historias/${h.id}/reaccion`, { method: "POST", body: { emoji: emo } })) },
+        emo, ...(n ? [el("small", {}, String(n))] : []));
+    }));
+
+    const lista = el("ul", { class: "visor-coment" }, ...d.comentarios.map((c) => el("li", {},
+      el("strong", {}, c.autor), " ", el("span", {}, c.texto),
+      ...(c.puedo_borrar ? [el("button", { type: "button", class: "x", "aria-label": "Eliminar comentario",
+        onclick: () => accion(api(`/api/historias/${h.id}/comentarios/${c.id}`, { method: "DELETE" })) }, "✕")] : []))));
+
+    const inp = el("input", { placeholder: "Escribe un comentario…", maxlength: "200", "aria-label": "Comentar historia" });
+    inp.addEventListener("focus", pausar);
+    const form = el("form", { class: "visor-form" }, inp, botonEmoji(inp), el("button", { type: "submit", class: "mini" }, "Enviar"));
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const texto = inp.value.trim();
+      if (texto) accion(api(`/api/historias/${h.id}/comentarios`, { method: "POST", body: { texto } }));
+    });
+    pie.replaceChildren(reacciones, ...(d.comentarios.length ? [lista] : []), form);
+    lista.scrollTop = lista.scrollHeight;
+  }
 
   function mostrar() {
     clearTimeout(timer);
+    caja.classList.remove("pausa");
     const g = grupos[gi], h = g.historias[si];
     const barras = el("div", { class: "visor-barras" },
       ...g.historias.map((_, i) => el("span", { class: i < si ? "hecha" : i === si ? "actual" : "" })));
@@ -310,11 +345,14 @@ function verHistorias(grupos, gi) {
       el("span", { class: "espacio" }),
       ...(g.mio ? [el("button", { type: "button", class: "mini peligro", onclick: borrar }, "Eliminar")] : []),
       el("button", { type: "button", class: "mini sec", "aria-label": "Cerrar", onclick: () => cerrar() }, "✕"));
+    const pie = el("div", { class: "visor-pie" });
     caja.replaceChildren(barras, cab,
       el("img", { class: "visor-img", src: `/api/imagenes/${h.imagen}`, alt: "Historia de " + g.autor }),
       ...(h.texto ? [el("p", { class: "visor-texto" }, h.texto)] : []),
       el("button", { type: "button", class: "visor-zona izq", "aria-label": "Anterior", onclick: anterior }),
-      el("button", { type: "button", class: "visor-zona der", "aria-label": "Siguiente", onclick: siguiente }));
+      el("button", { type: "button", class: "visor-zona der", "aria-label": "Siguiente", onclick: siguiente }),
+      pie);
+    api(`/api/historias/${h.id}/interacciones`).then((d) => pintarInteracciones(pie, h, d)).catch(() => {});
     timer = setTimeout(siguiente, 5000);
   }
 
@@ -700,8 +738,75 @@ async function cargarMensajes(abrirId = null) {
     const enviar = el("button", { type: "submit" }, "Enviar");
     const form = el("form", { class: "chat-form" }, inp, botonEmoji(inp), enviar);
 
-    const burbuja = (m) => el("div", { class: "burbuja " + (m.mio ? "mia" : "suya") },
-      el("p", { class: "texto" }, m.texto), el("small", {}, fecha(m.fecha)));
+    const nodos = new Map();      // id de mensaje -> funcion que lo vuelve a pintar (para cambios en vivo)
+    let sync = null;              // hora del servidor hasta la que ya vimos editados/eliminados
+
+    const burbuja = (m0) => {
+      let d = m0;
+      const nodo = el("div", { class: "burbuja msg-wrap " + (d.mio ? "mia" : "suya") });
+      const quitar = () => { nodo.remove(); nodos.delete(d.id); };
+
+      const editar = () => {
+        const inp = el("input", { value: d.texto, maxlength: "1000", "aria-label": "Editar mensaje" });
+        const guardar = el("button", { type: "button", class: "mini" }, "Guardar");
+        const cancelar = el("button", { type: "button", class: "mini sec" }, "Cancelar");
+        const confirmar = async () => {
+          const t = inp.value.trim();
+          if (!t || t === d.texto) return pintar();
+          guardar.disabled = true;
+          try {
+            d = await api(`/api/mensajes/${c.id}/${d.id}`, { method: "PUT", body: { texto: t } });
+            mostrarError("msg-app", null);
+            pintar();
+          } catch (e) { guardar.disabled = false; mostrarError("msg-app", e); }
+        };
+        guardar.addEventListener("click", confirmar);
+        cancelar.addEventListener("click", () => pintar());
+        inp.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); confirmar(); }
+          if (ev.key === "Escape") pintar();
+        });
+        nodo.replaceChildren(inp, el("div", { class: "msg-edit" }, guardar, cancelar));
+        inp.focus();
+      };
+
+      const borrar = async (para) => {
+        const aviso = para === "todos" ? "¿Eliminar este mensaje para todos?" : "¿Eliminar este mensaje solo para ti?";
+        if (!confirm(aviso)) return;
+        try {
+          await api(`/api/mensajes/${c.id}/${d.id}?para=${para}`, { method: "DELETE" });
+          mostrarError("msg-app", null);
+          if (para === "mi") quitar();
+          else { d = { ...d, eliminado: true, texto: "" }; pintar(); }
+        } catch (e) { mostrarError("msg-app", e); }
+      };
+
+      function pintar() {
+        nodo.classList.toggle("eliminada", d.eliminado);
+        const menu = el("div", { class: "msg-menu", hidden: "" });
+        const opcion = (txt, fn) => el("button", { type: "button", onclick: () => { menu.hidden = true; fn(); } }, txt);
+        if (d.mio && !d.eliminado) menu.append(opcion("Editar", editar));
+        menu.append(opcion("Eliminar para mí", () => borrar("mi")));
+        if (d.mio && !d.eliminado) menu.append(opcion("Eliminar para todos", () => borrar("todos")));
+        const abrirMenu = el("button", { type: "button", class: "msg-opc", "aria-label": "Opciones del mensaje",
+          onclick: () => { menu.hidden = !menu.hidden; } }, "⋯");
+        nodo.replaceChildren(
+          el("p", { class: "texto" + (d.eliminado ? " msg-borrado" : "") }, d.eliminado ? "Se eliminó este mensaje" : d.texto),
+          el("div", { class: "msg-pie" }, el("small", {}, fecha(d.fecha) + (d.editado ? " · editado" : "")), abrirMenu),
+          menu);
+      }
+
+      pintar();
+      nodos.set(d.id, (nuevo) => { d = nuevo; pintar(); });
+      return nodo;
+    };
+
+    // Trae lo editado/eliminado por la otra persona desde la ultima vez
+    const sincronizar = async () => {
+      const r = await api(`/api/mensajes/${c.id}/cambios` + (sync ? `?desde=${encodeURIComponent(sync)}` : ""));
+      sync = r.ahora;
+      for (const m of r.cambios) { const act = nodos.get(m.id); if (act) act(m); }
+    };
     const traer = async (forzar = false) => {
       const msgs = await api(`/api/mensajes/${c.id}` + (ultimoId ? `?despues=${ultimoId}` : ""));
       if (!msgs.length) return;
@@ -730,9 +835,10 @@ async function cargarMensajes(abrirId = null) {
     panelChat.replaceChildren(
       el("div", { class: "chat-cab" }, avatar(c.nombres, true, c.foto), el("strong", {}, c.nombres)), caja, form);
     pintarLista();
+    await sincronizar();          // punto de partida de los cambios en vivo
     await traer(true);
     if (!ultimoId) caja.append(el("p", { class: "muted vacio" }, "Aún no hay mensajes. ¡Saluda!"));
-    traerActivo = traer;
+    traerActivo = async () => { await traer(); await sincronizar(); };
     inp.focus();
     actualizarBadge();
   };
