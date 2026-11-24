@@ -239,36 +239,11 @@ def editar_perfil():
         db.users.update_one({"_id": uid}, {k: v for k, v in (("$set", poner), ("$unset", quitar)) if v})
     except DuplicateKeyError:
         raise ErrorApi("Ya existe una cuenta con ese nombre en esa escuela", 409)
-    if "nombres" in poner:                      # las publicaciones y comentarios guardan una copia del nombre
+    if "nombres" in poner:                      # las publicaciones, comentarios e historias guardan una copia del nombre
         db.posts.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
         db.comments.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
+        db.stories.update_many({"autor": uid}, {"$set": {"autor_nombre": poner["nombres"]}})
     return me()
-
-
-# ---------- perfil de otra persona (ventana de perfil) ----------
-@app.get("/api/usuarios/<uid>")
-@login_required
-def ver_usuario(uid):
-    """Datos publicos de un usuario + relacion, intereses en comun y grados de separacion."""
-    otro = oid(uid)
-    u = db.users.find_one({"_id": otro}, PROY)
-    if not u:
-        raise ErrorApi("Usuario no encontrado", 404)
-    me_id = yo()
-    rel = servicios.relaciones_con(me_id).get(str(otro))
-    if rel and rel["estado"] == "BLOQUEADA" and rel.get("bloqueado_por") != me_id:
-        raise ErrorApi("Usuario no encontrado", 404)       # quien te bloqueo no es visible para ti
-    out = publico(u, resumen_relacion(me_id, rel))
-    if otro != me_id:
-        mios = (db.users.find_one({"_id": me_id}, {"intereses": 1}) or {}).get("intereses", [])
-        out["intereses_comunes"] = sorted(conjuntos.interseccion(mios, u.get("intereses", [])))
-        ady = servicios.grafo_amistades()               # una sola consulta; el BFS corre en memoria
-        dist, camino = grafo.grados_de_separacion(me_id, otro, lambda v: ady.get(v, ()), max_prof=6)
-        out["grados"] = dist
-        if dist is not None:
-            nombres = {x["_id"]: x["nombres"] for x in db.users.find({"_id": {"$in": camino}}, {"nombres": 1})}
-            out["camino"] = [nombres.get(i, "?") for i in camino]
-    return jsonify(out)
 
 
 # ---------- buscador (algebra de Boole) ----------
@@ -359,10 +334,9 @@ def grados(otro):
     d = db.users.find_one({"_id": destino}, {"nombres": 1})
     if not d:
         raise ErrorApi("Usuario no encontrado", 404)
-    ady = servicios.grafo_amistades()
-    dist, camino = grafo.grados_de_separacion(yo(), destino, lambda v: ady.get(v, ()), max_prof=6)
+    dist, camino = grafo.grados_de_separacion(yo(), destino, servicios.vecinos, max_prof=6)
     if dist is None:
-        return jsonify(distancia=None, camino=[], mensaje="Aun no estan conectados por amigos")
+        return jsonify(distancia=None, camino=[], mensaje="Sin conexion (hasta 6 grados)")
     nombres = {u["_id"]: u["nombres"] for u in db.users.find({"_id": {"$in": camino}}, {"nombres": 1})}
     return jsonify(distancia=dist, camino=[nombres.get(i, "?") for i in camino])
 
@@ -467,21 +441,18 @@ def likes_de(tipo, ids):
 
 
 def serializar_posts(docs):
-    ids = [p["_id"] for p in docs]
-    cuenta, mios = likes_de("post", ids)
+    me_id = yo()
+    cuenta, mios = likes_de("post", [p["_id"] for p in docs])
     fotos = fotos_de([p["autor"] for p in docs])
-    # Una sola consulta agrupada en vez de contar los comentarios de cada publicacion por separado
-    n_coment = {d["_id"]: d["n"] for d in db.comments.aggregate([
-        {"$match": {"post_id": {"$in": ids}}}, {"$group": {"_id": "$post_id", "n": {"$sum": 1}}}])}
     out = []
     for p in docs:
-        item = {"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_id": str(p["autor"]),
-                "autor_foto": fotos.get(p["autor"]),
+        item = {"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_foto": fotos.get(p["autor"]),
                 "texto": p.get("texto", ""),
                 "imagen": str(p["imagen_id"]) if p.get("imagen_id") else None,
                 "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0),
                 "yo_like": p["_id"] in mios,
-                "n_comentarios": n_coment.get(p["_id"], 0)}
+                "mio": p["autor"] == me_id,
+                "n_comentarios": db.comments.count_documents({"post_id": p["_id"]})}
         out.append(item)
     return out
 
@@ -523,6 +494,27 @@ def crear_post():
         acceso_post(doc)
     db.posts.insert_one(doc)
     return jsonify(ok=True), 201
+
+
+@app.delete("/api/posts/<post_id>")
+@login_required
+def borrar_post(post_id):
+    """Solo el autor puede eliminar su publicacion. Se borran tambien sus comentarios, likes e imagen."""
+    pid = oid(post_id)
+    p = db.posts.find_one({"_id": pid})
+    if not p:
+        raise ErrorApi("Publicacion no encontrada", 404)
+    if p["autor"] != yo():
+        raise ErrorApi("Solo el autor puede eliminar su publicacion", 403)
+    ids_com = [c["_id"] for c in db.comments.find({"post_id": pid}, {"_id": 1})]
+    if ids_com:
+        db.likes.delete_many({"tipo": "comment", "obj": {"$in": ids_com}})
+        db.comments.delete_many({"post_id": pid})
+    db.likes.delete_many({"tipo": "post", "obj": pid})
+    if p.get("imagen_id"):
+        db.images.delete_one({"_id": p["imagen_id"], "owner": yo()})
+    db.posts.delete_one({"_id": pid})
+    return jsonify(ok=True)
 
 
 @app.get("/api/posts/<post_id>/comentarios")
@@ -585,6 +577,68 @@ def like(tipo, obj_id):
     return jsonify(liked=liked, total=db.likes.count_documents({"tipo": tipo, "obj": o}))
 
 
+# ---------- historias (duran 24 horas; las ven yo y mis amigos) ----------
+HORAS_HISTORIA = 24
+
+
+def limpiar_historias_vencidas():
+    """Borra las historias que ya pasaron las 24 h junto con su imagen."""
+    vencidas = list(db.stories.find({"expira": {"$lte": datetime.now(timezone.utc)}}, {"imagen_id": 1}))
+    if vencidas:
+        db.images.delete_many({"_id": {"$in": [s["imagen_id"] for s in vencidas]}})
+        db.stories.delete_many({"_id": {"$in": [s["_id"] for s in vencidas]}})
+
+
+@app.get("/api/historias")
+@login_required
+def historias():
+    """Historias vigentes agrupadas por autor: primero las mias, luego las de mis amigos."""
+    limpiar_historias_vencidas()
+    me_id = yo()
+    permitidos = servicios.vecinos(me_id) + [me_id]
+    docs = list(db.stories.find({"autor": {"$in": permitidos},
+                                 "expira": {"$gt": datetime.now(timezone.utc)}}).sort("creado", 1))
+    fotos = fotos_de([s["autor"] for s in docs])
+    por_autor = {}
+    for s in docs:
+        g = por_autor.setdefault(s["autor"], {
+            "autor_id": str(s["autor"]), "autor": s["autor_nombre"], "autor_foto": fotos.get(s["autor"]),
+            "mio": s["autor"] == me_id, "historias": []})
+        g["historias"].append({"id": str(s["_id"]), "imagen": str(s["imagen_id"]),
+                               "texto": s.get("texto", ""), "fecha": s["creado"].isoformat()})
+    return jsonify(sorted(por_autor.values(), key=lambda g: (not g["mio"], g["autor"].lower())))
+
+
+@app.post("/api/historias")
+@login_required
+def crear_historia():
+    d = datos()
+    if not d.get("imagen_id"):
+        raise ErrorApi("Elige una imagen para tu historia")
+    img = oid(d["imagen_id"])
+    if not db.images.find_one({"_id": img, "owner": yo()}, {"_id": 1}):
+        raise ErrorApi("Imagen invalida")
+    texto = str(d.get("texto", "")).strip()[:150]
+    u = db.users.find_one({"_id": yo()}, {"nombres": 1})
+    ahora = datetime.now(timezone.utc)
+    db.stories.insert_one({"autor": u["_id"], "autor_nombre": u["nombres"], "imagen_id": img,
+                           "texto": texto, "creado": ahora, "expira": ahora + timedelta(hours=HORAS_HISTORIA)})
+    return jsonify(ok=True), 201
+
+
+@app.delete("/api/historias/<sid>")
+@login_required
+def borrar_historia(sid):
+    s = db.stories.find_one({"_id": oid(sid)})
+    if not s:
+        raise ErrorApi("Historia no encontrada", 404)
+    if s["autor"] != yo():
+        raise ErrorApi("Solo el autor puede eliminar su historia", 403)
+    db.stories.delete_one({"_id": s["_id"]})
+    db.images.delete_one({"_id": s["imagen_id"], "owner": yo()})
+    return jsonify(ok=True)
+
+
 # ---------- grupos (un grupo es el CONJUNTO de sus miembros) ----------
 def es_admin_grupo(g, me_id):
     """El creador y los miembros con rol 'admin' pueden editar el grupo."""
@@ -593,30 +647,20 @@ def es_admin_grupo(g, me_id):
     return db.group_members.find_one({"grupo_id": g["_id"], "user": me_id, "rol": "admin"}, {"_id": 1}) is not None
 
 
-def resumenes_grupos(grupos_docs, me_id):
-    """Resumen de VARIOS grupos con 2 consultas en total (antes eran 3 por grupo)."""
-    ids = [g["_id"] for g in grupos_docs]
-    miembros = {d["_id"]: d["n"] for d in db.group_members.aggregate([
-        {"$match": {"grupo_id": {"$in": ids}}}, {"$group": {"_id": "$grupo_id", "n": {"$sum": 1}}}])}
-    mios = {d["grupo_id"]: d.get("rol") for d in
-            db.group_members.find({"grupo_id": {"$in": ids}, "user": me_id}, {"grupo_id": 1, "rol": 1})}
-    return [{"id": str(g["_id"]), "nombre": g["nombre"], "descripcion": g.get("descripcion", ""),
-             "foto": str(g["foto_id"]) if g.get("foto_id") else None,
-             "puedo_editar": g["creador"] == me_id or mios.get(g["_id"]) == "admin",
-             "miembros": miembros.get(g["_id"], 0),
-             "soy_miembro": g["_id"] in mios,
-             "soy_creador": g["creador"] == me_id} for g in grupos_docs]
-
-
 def resumen_grupo(g, me_id):
-    return resumenes_grupos([g], me_id)[0]
+    return {"id": str(g["_id"]), "nombre": g["nombre"], "descripcion": g.get("descripcion", ""),
+            "foto": str(g["foto_id"]) if g.get("foto_id") else None,
+            "puedo_editar": es_admin_grupo(g, me_id),
+            "miembros": db.group_members.count_documents({"grupo_id": g["_id"]}),
+            "soy_miembro": db.group_members.find_one({"grupo_id": g["_id"], "user": me_id}, {"_id": 1}) is not None,
+            "soy_creador": g["creador"] == me_id}
 
 
 @app.get("/api/grupos")
 @login_required
 def grupos():
-    docs = list(db.groups.find().sort("creado", -1).limit(100))
-    return jsonify(resumenes_grupos(docs, yo()))
+    me_id = yo()
+    return jsonify([resumen_grupo(g, me_id) for g in db.groups.find().sort("creado", -1).limit(100)])
 
 
 @app.post("/api/grupos")
@@ -760,9 +804,7 @@ def historial(otro):
         docs = list(db.messages.find({"par": par, "_id": {"$gt": oid(despues)}}).sort("_id", 1).limit(100))
     else:
         docs = list(db.messages.find({"par": par}).sort("_id", -1).limit(50))[::-1]
-    # Solo escribe en la BD si realmente hay mensajes sin leer (la mayoria de los sondeos no tienen)
-    if any(m["receptor"] == yo() and not m.get("leido") for m in docs):
-        db.messages.update_many({"par": par, "receptor": yo(), "leido": False}, {"$set": {"leido": True}})
+    db.messages.update_many({"par": par, "receptor": yo(), "leido": False}, {"$set": {"leido": True}})
     return jsonify([json_mensaje(m) for m in docs])
 
 
@@ -800,7 +842,7 @@ def buscar_rapido():
                        {"_id": {"$ne": yo_id}}, {"_id": {"$nin": bloqueadores}}]}
     personas = [publico(u, resumen_relacion(yo_id, rels.get(str(u["_id"]))))
                 for u in db.users.find(filtro, PROY).limit(20)]
-    return jsonify(personas=personas, grupos=resumenes_grupos(list(db.groups.find({"nombre": rx}).limit(10)), yo_id))
+    return jsonify(personas=personas, grupos=[resumen_grupo(g, yo_id) for g in db.groups.find({"nombre": rx}).limit(10)])
 
 
 if __name__ == "__main__":
