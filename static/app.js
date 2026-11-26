@@ -2,7 +2,6 @@
 
 /* ===================== Utilidades ===================== */
 const $ = (id) => document.getElementById(id);
-let yoId = null;   // id del usuario con sesion iniciada
 
 // Crea elementos con textContent (nunca innerHTML con datos del usuario => sin XSS)
 function el(tag, props = {}, ...hijos) {
@@ -33,35 +32,64 @@ function mostrarError(id, e) { $(id).textContent = e ? e.message : ""; }
 // Las fechas del servidor vienen en UTC sin "Z": se agrega para mostrarlas en hora local
 const fecha = (s) => new Date(/[zZ]|[+-]\d\d:\d\d$/.test(s) ? s : s + "Z").toLocaleString();
 
-// El arbol de escuelas casi nunca cambia: se pide una sola vez y se reutiliza
-let _arbolUnidades = null;
-async function arbolUnidades() {
-  if (!_arbolUnidades) _arbolUnidades = await api("/api/unidades-publicas");
-  return _arbolUnidades;
-}
-
 // Avatar con iniciales y color estable segun el nombre
 function avatar(nombre, peq = false, foto = null, grande = false) {
   const tam = (peq ? " peq" : "") + (grande ? " grande" : "");
-  if (foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${foto}`, alt: nombre, loading: "lazy" });
+  if (foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${foto}`, alt: nombre });
   const ini = (nombre || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
   let h = 0;
   for (const c of nombre || "") h = (h * 31 + c.charCodeAt(0)) % 360;
   return el("span", { class: "avatar" + tam, style: `background:hsl(${h} 45% 38%)` }, ini);
 }
 
-/* ===================== Modo oscuro ===================== */
-function aplicarTema(t) {
-  document.documentElement.dataset.tema = t;
-  try { localStorage.setItem("tema", t); } catch { /* navegador sin almacenamiento */ }
-  document.querySelectorAll(".tema-btn").forEach((b) => {
-    b.textContent = t === "oscuro" ? "☀️" : "🌙";
-    b.title = t === "oscuro" ? "Cambiar a modo claro" : "Cambiar a modo oscuro";
-  });
+// Ventana flotante generica (nueva historia, visor de historias, perfil). Devuelve la funcion para cerrarla.
+function abrirModal(contenido, alCerrar) {
+  const fondo = el("div", { class: "modal" });
+  const tecla = (ev) => { if (ev.key === "Escape") cerrar(); };
+  const cerrar = () => {
+    document.removeEventListener("keydown", tecla);
+    fondo.remove();
+    if (alCerrar) alCerrar();
+  };
+  fondo.addEventListener("click", (ev) => { if (ev.target === fondo) cerrar(); });
+  document.addEventListener("keydown", tecla);
+  fondo.append(contenido);
+  document.body.append(fondo);
+  return cerrar;
 }
-document.querySelectorAll(".tema-btn").forEach((b) =>
-  b.addEventListener("click", () => aplicarTema(document.documentElement.dataset.tema === "oscuro" ? "claro" : "oscuro")));
-aplicarTema(document.documentElement.dataset.tema || "claro");
+
+/* ===================== Tamaño de letra (Configuracion) ===================== */
+const FUENTE_MIN = 12, FUENTE_MAX = 24, FUENTE_DEF = 16;
+let fuentePx = FUENTE_DEF;
+try {
+  const guardado = Number(localStorage.getItem("fuentePx"));
+  if (guardado >= FUENTE_MIN && guardado <= FUENTE_MAX) fuentePx = guardado;
+} catch { /* localStorage no disponible: se usa el tamaño por defecto */ }
+
+function aplicarFuente(px) {
+  fuentePx = px;
+  document.documentElement.style.fontSize = px + "px";
+  try { localStorage.setItem("fuentePx", String(px)); } catch { /* ignorar */ }
+}
+document.documentElement.style.fontSize = fuentePx + "px";
+
+/* ===================== Tema claro / oscuro (Configuracion) ===================== */
+const TEMAS = ["claro", "oscuro", "auto"];
+let temaPref = "auto";
+try {
+  const t = localStorage.getItem("tema");
+  if (TEMAS.includes(t)) temaPref = t;
+} catch { /* localStorage no disponible */ }
+const mqOscuro = window.matchMedia("(prefers-color-scheme: dark)");
+
+function aplicarTema(pref = temaPref) {
+  temaPref = pref;
+  const oscuro = pref === "oscuro" || (pref === "auto" && mqOscuro.matches);
+  document.documentElement.dataset.tema = oscuro ? "oscuro" : "claro";
+  try { localStorage.setItem("tema", pref); } catch { /* ignorar */ }
+}
+mqOscuro.addEventListener("change", () => { if (temaPref === "auto") aplicarTema(); });
+aplicarTema();
 
 // Alternar entre iniciar sesion y crear cuenta
 function mostrarForm(registro) {
@@ -92,12 +120,11 @@ async function iniciar() {
   } catch {
     $("vista-auth").hidden = false;
     $("vista-app").hidden = true;
-    try { llenarEscuelas(await arbolUnidades()); } catch (e) { mostrarError("msg-auth", e); }
+    try { llenarEscuelas(await api("/api/unidades-publicas")); } catch (e) { mostrarError("msg-auth", e); }
   }
 }
 
 function entrarApp(u) {
-  yoId = u.id;
   $("vista-auth").hidden = true;
   $("vista-app").hidden = false;
   pintarChip(u);
@@ -105,8 +132,9 @@ function entrarApp(u) {
   if (!badgeIniciado) { badgeIniciado = true; actualizarBadge(); setInterval(actualizarBadge, 20000); }
 }
 
+// Arriba a la derecha solo se muestra el primer nombre (sin facultad)
 function pintarChip(u) {
-  $("yo").replaceChildren(avatar(u.nombres, true, u.foto), el("span", {}, `${u.nombres.split(" ")[0]} · ${u.facultad}`));
+  $("yo").replaceChildren(avatar(u.nombres, true, u.foto), el("span", {}, u.nombres.split(" ")[0]));
 }
 $("yo").addEventListener("click", () => irA("perfil").catch((e) => mostrarError("msg-app", e)));
 
@@ -131,11 +159,10 @@ $("btn-logout").addEventListener("click", async () => {
 
 /* ===================== Navegacion (menu izquierdo) ===================== */
 let tabActual = "muro";
-const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, mensajes: cargarMensajes, grupos: listarGrupos, perfil: cargarPerfil };
+const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, mensajes: cargarMensajes, grupos: listarGrupos, perfil: cargarPerfil, config: cargarConfig };
 
 async function irA(tab, cargar = true) {
   detenerSondeo();
-  cerrarPerfil();
   tabActual = tab;
   document.querySelectorAll(".menu button").forEach((x) => x.classList.toggle("activo", x.dataset.tab === tab));
   document.querySelectorAll(".contenido > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
@@ -146,103 +173,6 @@ async function irA(tab, cargar = true) {
 
 document.querySelectorAll(".menu button").forEach((b) =>
   b.addEventListener("click", () => irA(b.dataset.tab).catch((e) => mostrarError("msg-app", e))));
-
-/* ===================== Ventana de perfil ===================== */
-let perfilAbiertoId = null;
-
-function cerrarPerfil() {
-  perfilAbiertoId = null;
-  $("modal-perfil").hidden = true;
-  $("modal-contenido").replaceChildren();
-}
-$("modal-cerrar").addEventListener("click", cerrarPerfil);
-$("modal-perfil").addEventListener("click", (ev) => { if (ev.target === $("modal-perfil")) cerrarPerfil(); });
-document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && perfilAbiertoId) cerrarPerfil(); });
-
-// Botones segun el estado de la relacion (automata). `despues` se ejecuta al terminar la accion.
-// El boton se desactiva mientras se procesa (evita doble clic y da respuesta inmediata).
-function botonesRelacion(id, rel, despues) {
-  const btn = (txt, fn, clase = "") => {
-    const b = el("button", { class: `mini ${clase}` }, txt);
-    b.addEventListener("click", async () => {
-      b.disabled = true;
-      try { await fn(); } finally { b.disabled = false; }
-    });
-    return b;
-  };
-  const acc = (evento) => () => accionAmistad(id, evento, despues);
-  const botones = [];
-  switch (rel.estado) {
-    case "INEXISTENTE": case "RECHAZADA":
-      botones.push(btn("Enviar solicitud", acc("enviar"))); break;
-    case "PENDIENTE":
-      if (rel.emisor_soy_yo) botones.push(btn("Cancelar solicitud", acc("cancelar"), "sec"));
-      else botones.push(btn("Aceptar", acc("aceptar")), btn("Rechazar", acc("rechazar"), "sec"));
-      break;
-    case "ACEPTADA":
-      botones.push(btn("Mensaje", () => { cerrarPerfil(); abrirMensajes(id); }), btn("Eliminar amigo", acc("eliminar_amigo"), "sec")); break;
-    case "BLOQUEADA":
-      if (rel.bloqueado_por_mi) botones.push(btn("Desbloquear", acc("desbloquear")));
-  }
-  if (rel.estado !== "BLOQUEADA") botones.push(btn("Bloquear", acc("bloquear"), "peligro"));
-  return botones;
-}
-
-// Texto amigable para cada estado del automata (el estado interno no cambia)
-const ETIQUETA_ESTADO = {
-  INEXISTENTE: "No son amigos",
-  PENDIENTE: "Solicitud pendiente",
-  ACEPTADA: "Amigos",
-  RECHAZADA: "Solicitud rechazada",
-  BLOQUEADA: "Bloqueado",
-};
-
-async function abrirPerfil(id) {
-  if (!id) return;
-  if (id === yoId) { await irA("perfil").catch((e) => mostrarError("msg-app", e)); return; }
-  try {
-    const u = await api(`/api/usuarios/${id}`);
-    perfilAbiertoId = id;
-    const rel = u.relacion || { estado: "INEXISTENTE" };
-    const bloque = (titulo, ...contenido) => el("div", { class: "modal-bloque" }, el("h3", {}, titulo), ...contenido);
-    const partes = [
-      el("div", { class: "modal-cab" }, avatar(u.nombres, false, u.foto, true),
-        el("div", {}, el("h2", {}, u.nombres),
-          el("p", { class: "muted" }, u.escuela || "—"),
-          el("p", { class: "muted" }, `${u.facultad || "—"} · ciclo ${u.ciclo ?? "—"}`),
-          el("span", { class: `estado ${rel.estado}` }, ETIQUETA_ESTADO[rel.estado] || rel.estado))),
-      bloque("Sobre mí", el("p", { class: u.bio ? "" : "muted" }, u.bio || "Sin descripción.")),
-      bloque("Intereses", ...(u.intereses.length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))]
-        : [el("p", { class: "muted" }, "Sin intereses.")])),
-    ];
-    if (u.intereses_comunes) {
-      partes.push(bloque("Intereses en común", u.intereses_comunes.length
-        ? el("div", {}, ...u.intereses_comunes.map((i) => el("span", { class: "etiqueta" }, i)))
-        : el("p", { class: "muted" }, "Ninguno por ahora.")));
-      const conexion = u.grados === null ? "Aún no están conectados por amigos."
-        : u.grados === 1 ? "Son amigos directos."
-        : u.grados === 2 ? `Tienen un amigo en común: ${u.camino[1]}.`
-        : `Los separan ${u.grados} pasos: ${u.camino.join(" → ")}.`;
-      partes.push(bloque("Conexión", el("p", { class: u.grados === null ? "muted" : "" }, conexion)));
-    }
-    partes.push(el("div", { class: "modal-acciones" }, ...botonesRelacion(id, rel, () => abrirPerfil(id))));
-    $("modal-contenido").replaceChildren(...partes);
-    $("modal-perfil").hidden = false;
-    mostrarError("msg-app", null);
-  } catch (e) { mostrarError("msg-app", e); }
-}
-
-// Nombre clicable que abre el perfil
-function nombreLink(id, nombre) {
-  return el("button", { type: "button", class: "link", onclick: () => abrirPerfil(id) }, nombre);
-}
-// Hace clicable cualquier elemento (p. ej. un avatar)
-function conPerfil(nodo, id) {
-  if (!id) return nodo;
-  nodo.classList.add("clic");
-  nodo.addEventListener("click", () => abrirPerfil(id));
-  return nodo;
-}
 
 /* ===================== Emojis, fotos y "me gusta" ===================== */
 const EMOJIS = ("😀 😂 🥹 😍 🥳 😎 🤔 😅 😢 😡 🙄 😴 👍 👏 🙏 💪 🔥 ✨ 🎉 ❤️ 💙 💛 📚 ✏️ 🎓 🧠 💡 📝 ⚽ 🎵 🎮 ☕ 🍕 🌎 🇵🇪 🏛️ ✅ ❓ 🚀 👀").split(" ");
@@ -263,6 +193,7 @@ function botonEmoji(campo) {
 }
 document.addEventListener("click", (ev) => {
   if (!ev.target.closest(".emoji-wrap")) document.querySelectorAll(".emoji-pop").forEach((p) => (p.hidden = true));
+  if (!ev.target.closest(".msg-wrap")) document.querySelectorAll(".msg-menu").forEach((p) => (p.hidden = true));
   if (!ev.target.closest(".buscador")) $("sugerencias").hidden = true;
 });
 
@@ -319,33 +250,181 @@ function composer(grupoId, alPublicar) {
       archivo, el("span", { class: "espacio" }), pub));
 }
 
+/* ===================== Historias (duran 24 h) ===================== */
+function nuevaHistoria(f) {
+  if (f.size > 2 * 1024 * 1024) return mostrarError("msg-app", new Error("La imagen no puede pasar de 2 MB"));
+  mostrarError("msg-app", null);
+  const texto = el("input", { placeholder: "Añade un texto (opcional)", maxlength: "150" });
+  const msg = el("p", { class: "error", role: "alert" });
+  const ok = el("button", { type: "button" }, "Compartir historia");
+  const cancelar = el("button", { type: "button", class: "sec" }, "Cancelar");
+  let cerrar;
+  cancelar.addEventListener("click", () => cerrar());
+  ok.addEventListener("click", async () => {
+    ok.disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append("imagen", f);
+      const { id } = await api("/api/imagenes", { method: "POST", form: fd });
+      await api("/api/historias", { method: "POST", body: { imagen_id: id, texto: texto.value } });
+      cerrar();
+      await pintarHistorias();
+    } catch (e) { msg.textContent = e.message; ok.disabled = false; }
+  });
+  cerrar = abrirModal(el("div", { class: "modal-caja" }, el("h2", {}, "Nueva historia"),
+    el("img", { class: "historia-prev", src: URL.createObjectURL(f), alt: "Vista previa de la historia" }),
+    texto, msg, el("div", { class: "barra" }, ok, cancelar)));
+}
+
+// Visor a pantalla completa: avanza solo cada 5 s; toca la derecha/izquierda para cambiar.
+// Abajo: reacciones con emojis y comentarios (al escribir, la historia se detiene).
+const REACCIONES = ["\u2764\ufe0f", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F44F}", "\u{1F525}"];
+
+function verHistorias(grupos, gi) {
+  let si = 0, timer = null, cerrar;
+  const caja = el("div", { class: "visor" });
+
+  const siguiente = () => {
+    if (si < grupos[gi].historias.length - 1) si++;
+    else if (gi < grupos.length - 1) { gi++; si = 0; }
+    else return cerrar();
+    mostrar();
+  };
+  const anterior = () => {
+    if (si > 0) si--;
+    else if (gi > 0) { gi--; si = 0; }
+    mostrar();
+  };
+  const borrar = async () => {
+    if (!confirm("¿Eliminar esta historia?")) return;
+    try {
+      await api(`/api/historias/${grupos[gi].historias[si].id}`, { method: "DELETE" });
+      cerrar();
+      await pintarHistorias();
+    } catch (e) { mostrarError("msg-app", e); }
+  };
+  const pausar = () => { clearTimeout(timer); caja.classList.add("pausa"); };
+
+  function pintarInteracciones(pie, h, d) {
+    const accion = (promesa) => promesa.then((nuevo) => pintarInteracciones(pie, h, nuevo))
+      .catch((e) => mostrarError("msg-app", e));
+
+    const reacciones = el("div", { class: "visor-reacc" }, ...REACCIONES.map((emo) => {
+      const n = d.reacciones[emo] || 0, mia = d.mia === emo;
+      return el("button", { type: "button", class: "reacc" + (mia ? " activa" : ""), "aria-pressed": String(mia),
+        "aria-label": `Reaccionar con ${emo}`,
+        onclick: () => accion(api(`/api/historias/${h.id}/reaccion`, { method: "POST", body: { emoji: emo } })) },
+        emo, ...(n ? [el("small", {}, String(n))] : []));
+    }));
+
+    const lista = el("ul", { class: "visor-coment" }, ...d.comentarios.map((c) => el("li", {},
+      el("strong", {}, c.autor), " ", el("span", {}, c.texto),
+      ...(c.puedo_borrar ? [el("button", { type: "button", class: "x", "aria-label": "Eliminar comentario",
+        onclick: () => accion(api(`/api/historias/${h.id}/comentarios/${c.id}`, { method: "DELETE" })) }, "✕")] : []))));
+
+    const inp = el("input", { placeholder: "Escribe un comentario…", maxlength: "200", "aria-label": "Comentar historia" });
+    inp.addEventListener("focus", pausar);
+    const form = el("form", { class: "visor-form" }, inp, botonEmoji(inp), el("button", { type: "submit", class: "mini" }, "Enviar"));
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const texto = inp.value.trim();
+      if (texto) accion(api(`/api/historias/${h.id}/comentarios`, { method: "POST", body: { texto } }));
+    });
+    pie.replaceChildren(reacciones, ...(d.comentarios.length ? [lista] : []), form);
+    lista.scrollTop = lista.scrollHeight;
+  }
+
+  function mostrar() {
+    clearTimeout(timer);
+    caja.classList.remove("pausa");
+    const g = grupos[gi], h = g.historias[si];
+    const barras = el("div", { class: "visor-barras" },
+      ...g.historias.map((_, i) => el("span", { class: i < si ? "hecha" : i === si ? "actual" : "" })));
+    const cab = el("div", { class: "visor-cab" }, avatar(g.autor, true, g.autor_foto),
+      el("strong", {}, g.mio ? "Tu historia" : g.autor), el("small", {}, fecha(h.fecha)),
+      el("span", { class: "espacio" }),
+      ...(g.mio ? [el("button", { type: "button", class: "mini peligro", onclick: borrar }, "Eliminar")] : []),
+      el("button", { type: "button", class: "mini sec", "aria-label": "Cerrar", onclick: () => cerrar() }, "✕"));
+    const pie = el("div", { class: "visor-pie" });
+    caja.replaceChildren(barras, cab,
+      el("img", { class: "visor-img", src: `/api/imagenes/${h.imagen}`, alt: "Historia de " + g.autor }),
+      ...(h.texto ? [el("p", { class: "visor-texto" }, h.texto)] : []),
+      el("button", { type: "button", class: "visor-zona izq", "aria-label": "Anterior", onclick: anterior }),
+      el("button", { type: "button", class: "visor-zona der", "aria-label": "Siguiente", onclick: siguiente }),
+      pie);
+    api(`/api/historias/${h.id}/interacciones`).then((d) => pintarInteracciones(pie, h, d)).catch(() => {});
+    timer = setTimeout(siguiente, 5000);
+  }
+
+  cerrar = abrirModal(caja, () => clearTimeout(timer));
+  mostrar();
+}
+
+async function pintarHistorias() {
+  const grupos = await api("/api/historias");
+  const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+  archivo.addEventListener("change", () => {
+    const f = archivo.files[0];
+    archivo.value = "";
+    if (f) nuevaHistoria(f);
+  });
+  const crear = el("button", { type: "button", class: "historia nueva", title: "Subir una historia",
+    onclick: () => archivo.click() }, el("span", { class: "historia-aro" }, "+"), el("small", {}, "Agregar"), archivo);
+  const items = grupos.map((g, i) => el("button", { type: "button", class: "historia", title: g.autor,
+    onclick: () => verHistorias(grupos, i) },
+    el("span", { class: "historia-aro" }, avatar(g.autor, false, g.autor_foto)),
+    el("small", {}, g.mio ? "Tu historia" : g.autor.split(" ")[0])));
+  $("historias").replaceChildren(crear, ...items);
+}
+
 /* ===================== Muro + comentarios (ARBOL) ===================== */
 // Muro general (solo yo y mis amigos) o publicaciones de un grupo concreto
 async function pintarPosts(cont, grupoId) {
   const posts = await api("/api/posts" + (grupoId ? `?grupo=${grupoId}` : ""));
   const vacio = grupoId ? "Aún no hay publicaciones en este grupo. ¡Escribe la primera!"
     : "Tu muro está vacío. Publica algo o agrega amigos para ver lo que comparten.";
-  cont.replaceChildren(...(posts.length ? posts.map(tarjetaPost) : [el("p", { class: "muted vacio" }, vacio)]));
+  const recargar = () => pintarPosts(cont, grupoId);
+  cont.replaceChildren(...(posts.length ? posts.map((p) => tarjetaPost(p, recargar)) : [el("p", { class: "muted vacio" }, vacio)]));
 }
 
 async function cargarPosts() {
   $("composer-muro").replaceChildren(composer(null, cargarPosts));
-  await pintarPosts($("posts"));
+  await Promise.all([
+    pintarHistorias().catch((e) => mostrarError("msg-app", e)),
+    pintarPosts($("posts")),
+  ]);
 }
 
-function tarjetaPost(p) {
+function tarjetaPost(p, alBorrar) {
   const zona = el("div", { hidden: "" });
   const btn = el("button", { class: "sec mini" }, `💬 Comentarios (${p.n_comentarios})`);
   btn.addEventListener("click", async () => {
     zona.hidden = !zona.hidden;
     if (!zona.hidden) await pintarComentarios(p.id, zona);
   });
+
+  // Solo el autor ve el boton de eliminar
+  const extra = [];
+  if (p.mio) {
+    const borrar = el("button", { type: "button", class: "mini peligro", title: "Eliminar publicación" }, "🗑 Eliminar");
+    borrar.addEventListener("click", async () => {
+      if (!confirm("¿Eliminar esta publicación? También se borrarán sus comentarios.")) return;
+      borrar.disabled = true;
+      try {
+        await api(`/api/posts/${p.id}`, { method: "DELETE" });
+        mostrarError("msg-app", null);
+        await alBorrar();
+      } catch (e) { borrar.disabled = false; mostrarError("msg-app", e); }
+    });
+    extra.push(el("span", { class: "espacio" }), borrar);
+  }
+
   return el("div", { class: "card" },
-    el("div", { class: "autor" }, conPerfil(avatar(p.autor, false, p.autor_foto), p.autor_id),
-      el("div", {}, nombreLink(p.autor_id, p.autor), el("span", { class: "muted" }, fecha(p.fecha)))),
+    el("div", { class: "autor" }, avatar(p.autor, false, p.autor_foto),
+      el("div", {}, el("strong", {}, p.autor), el("span", { class: "muted" }, fecha(p.fecha)))),
     ...(p.texto ? [el("p", { class: "texto" }, p.texto)] : []),
     ...(p.imagen ? [el("img", { class: "foto", src: `/api/imagenes/${p.imagen}`, alt: "Imagen publicada", loading: "lazy" })] : []),
-    el("div", { class: "acciones" }, botonLike("post", p.id, p.likes, p.yo_like), btn), zona);
+    el("div", { class: "acciones" }, botonLike("post", p.id, p.likes, p.yo_like), btn, ...extra), zona);
 }
 
 // Descarga el arbol y lo recorre en DFS (preorden) con renderNodo
@@ -359,8 +438,7 @@ async function pintarComentarios(postId, zona) {
 function renderNodo(nodo, profundidad, postId, zona) {
   const li = el("li", { class: "comentario" });
   const cuerpo = el("div", {},
-    el("div", { class: "autor" }, conPerfil(avatar(nodo.autor, true, nodo.autor_foto), nodo.autor_id),
-      nombreLink(nodo.autor_id, nodo.autor),
+    el("div", { class: "autor" }, avatar(nodo.autor, true, nodo.autor_foto), el("strong", {}, nodo.autor),
       el("span", { class: "meta" }, fecha(nodo.fecha))),
     el("p", { class: "texto" }, nodo.texto));
   const resp = el("button", { class: "sec mini" }, "Responder");
@@ -421,9 +499,9 @@ $("q").addEventListener("input", () => {
   temporizador = setTimeout(async () => {
     try {
       const r = await api(`/api/buscar-rapido?q=${encodeURIComponent(q)}`);
-      // En las sugerencias solo se muestra el nombre; al elegir una persona se abre su perfil
+      // En las sugerencias solo se muestra el nombre (los datos del perfil salen al presionarlo)
       const personas = r.personas.slice(0, 5).map((u) => el("button", { type: "button", class: "sug",
-        onclick: () => { $("sugerencias").hidden = true; abrirPerfil(u.id); } },
+        onclick: () => { $("q").value = u.nombres; buscarTexto(u.nombres).catch((e) => mostrarError("msg-app", e)); } },
         avatar(u.nombres, true, u.foto), el("span", {}, el("strong", {}, u.nombres))));
       const grupos = r.grupos.slice(0, 3).map((g) => el("button", { type: "button", class: "sug",
         onclick: () => { $("sugerencias").hidden = true; abrirGrupo(g.id); } },
@@ -432,7 +510,7 @@ $("q").addEventListener("input", () => {
         el("button", { type: "submit", class: "sug todos" }, `Ver todos los resultados para “${q}”`));
       $("sugerencias").hidden = false;
     } catch { $("sugerencias").hidden = true; }
-  }, 350);
+  }, 250);
 });
 
 function construirFiltro() {
@@ -466,16 +544,55 @@ $("btn-buscar").addEventListener("click", async () => {
 });
 
 /* ===================== Usuarios y amistad (AUTOMATA) ===================== */
-// Lista compacta: solo foto y nombre (clicables) + botones de accion.
-// El resto de los datos se ve al abrir el perfil.
-function itemUsuario(u) {
+// Ventana con los datos de la persona: solo se abre al presionar su nombre
+function verPerfilUsuario(u) {
   const rel = u.relacion || { estado: "INEXISTENTE" };
-  return el("div", { class: "usuario compacto" }, conPerfil(avatar(u.nombres, false, u.foto), u.id),
-    el("div", {}, nombreLink(u.id, u.nombres)),
-    el("div", {}, ...botonesRelacion(u.id, rel)));
+  const textoEstado = {
+    ACEPTADA: "Son amigos",
+    PENDIENTE: rel.emisor_soy_yo ? "Solicitud enviada" : "Te envió una solicitud",
+    RECHAZADA: "Solicitud rechazada",
+    BLOQUEADA: "Bloqueado",
+  }[rel.estado];
+  let cerrar;
+  const caja = el("div", { class: "modal-caja" },
+    el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
+      el("div", {}, el("h2", {}, u.nombres),
+        el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
+        ...(textoEstado ? [el("span", { class: `estado ${rel.estado}` }, textoEstado)] : []))),
+    ...(u.bio ? [el("p", {}, u.bio)] : []),
+    ...(u.intereses.length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))] : []),
+    el("button", { type: "button", class: "sec", onclick: () => cerrar() }, "Cerrar"));
+  cerrar = abrirModal(caja);
 }
 
-async function accionAmistad(id, evento, despues) {
+function itemUsuario(u) {
+  const rel = u.relacion || { estado: "INEXISTENTE" };
+  const btn = (txt, fn, clase = "") => el("button", { class: `mini ${clase}`, onclick: fn }, txt);
+  const acc = (evento) => () => accionAmistad(u.id, evento);
+  const botones = [];
+
+  switch (rel.estado) {
+    case "INEXISTENTE": case "RECHAZADA":
+      botones.push(btn("Enviar solicitud", acc("enviar"))); break;
+    case "PENDIENTE":
+      if (rel.emisor_soy_yo) botones.push(btn("Cancelar solicitud", acc("cancelar"), "sec"));
+      else botones.push(btn("Aceptar", acc("aceptar")), btn("Rechazar", acc("rechazar"), "sec"));
+      break;
+    case "ACEPTADA":
+      botones.push(btn("Mensaje", () => abrirMensajes(u.id)), btn("Eliminar amigo", acc("eliminar_amigo"), "sec")); break;
+    case "BLOQUEADA":
+      if (rel.bloqueado_por_mi) botones.push(btn("Desbloquear", acc("desbloquear")));
+  }
+  if (rel.estado !== "BLOQUEADA") botones.push(btn("Bloquear", acc("bloquear"), "peligro"));
+
+  // En la lista solo se ve el nombre; el resto de datos aparece al presionarlo
+  return el("div", { class: "usuario" }, avatar(u.nombres, false, u.foto),
+    el("div", {}, el("button", { type: "button", class: "nombre-link", title: "Ver perfil",
+      onclick: () => verPerfilUsuario(u) }, u.nombres)),
+    el("div", {}, ...botones));
+}
+
+async function accionAmistad(id, evento) {
   try {
     await api(`/api/amistad/${id}/${evento}`, { method: "POST" });
     mostrarError("msg-app", null);
@@ -483,7 +600,6 @@ async function accionAmistad(id, evento, despues) {
       if (ultimaConsulta) await buscarTexto(ultimaConsulta, true);
       if (ultimoFiltro) await ejecutarBusqueda();
     } else if (tabActual === "amigos") await cargarAmigos();
-    if (despues) await despues();
   } catch (e) { mostrarError("msg-app", e); }
 }
 
@@ -506,22 +622,30 @@ async function cargarAmigos() {
 /* ===================== Grupos (conjunto de miembros) ===================== */
 function avatarGrupo(g, peq = false, grande = false) {
   const tam = (peq ? " peq" : "") + (grande ? " grande" : "");
-  if (g.foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${g.foto}`, alt: g.nombre, loading: "lazy" });
+  if (g.foto) return el("img", { class: "avatar" + tam, src: `/api/imagenes/${g.foto}`, alt: g.nombre });
   return el("span", { class: "avatar grupo" + tam }, "👥");
 }
 
+// En la lista no hay "Abrir" ni "Salir": al presionar el grupo se entra, y para salir hay que estar dentro.
+// Solo se ofrece "Unirme" a quien todavia no es miembro.
 function filaGrupo(g, refrescar) {
-  const botones = [el("button", { class: "mini", onclick: () => abrirGrupo(g.id) }, "Abrir")];
-  if (!g.soy_creador) {
-    botones.push(el("button", { class: "mini " + (g.soy_miembro ? "sec" : ""), onclick: async () => {
+  const botones = [];
+  if (!g.soy_miembro) {
+    botones.push(el("button", { class: "mini", onclick: async (ev) => {
+      ev.stopPropagation();
       try { await api(`/api/grupos/${g.id}/unirse`, { method: "POST" }); mostrarError("msg-app", null); await refrescar(); }
       catch (e) { mostrarError("msg-app", e); }
-    } }, g.soy_miembro ? "Salir" : "Unirme"));
+    } }, "Unirme"));
   }
-  return el("div", { class: "usuario foro fila-grupo" }, avatarGrupo(g),
+  return el("div", { class: "usuario foro fila-grupo clicable", role: "button", tabindex: "0",
+    "aria-label": `Abrir grupo ${g.nombre}`,
+    onclick: () => abrirGrupo(g.id),
+    onkeydown: (ev) => { if (ev.key === "Enter" && ev.target === ev.currentTarget) abrirGrupo(g.id); } },
+    avatarGrupo(g),
     el("div", { class: "grupo-info" }, el("strong", {}, g.nombre),
       el("span", { class: "tipo" }, `${g.miembros} miembro${g.miembros === 1 ? "" : "s"}`),
-      g.descripcion ? el("p", { class: "muted" }, g.descripcion) : "", el("div", {}, ...botones)));
+      g.descripcion ? el("p", { class: "muted" }, g.descripcion) : "",
+      ...(botones.length ? [el("div", {}, ...botones)] : [])));
 }
 
 async function listarGrupos() {
@@ -634,8 +758,75 @@ async function cargarMensajes(abrirId = null) {
     const enviar = el("button", { type: "submit" }, "Enviar");
     const form = el("form", { class: "chat-form" }, inp, botonEmoji(inp), enviar);
 
-    const burbuja = (m) => el("div", { class: "burbuja " + (m.mio ? "mia" : "suya") },
-      el("p", { class: "texto" }, m.texto), el("small", {}, fecha(m.fecha)));
+    const nodos = new Map();      // id de mensaje -> funcion que lo vuelve a pintar (para cambios en vivo)
+    let sync = null;              // hora del servidor hasta la que ya vimos editados/eliminados
+
+    const burbuja = (m0) => {
+      let d = m0;
+      const nodo = el("div", { class: "burbuja msg-wrap " + (d.mio ? "mia" : "suya") });
+      const quitar = () => { nodo.remove(); nodos.delete(d.id); };
+
+      const editar = () => {
+        const inp = el("input", { value: d.texto, maxlength: "1000", "aria-label": "Editar mensaje" });
+        const guardar = el("button", { type: "button", class: "mini" }, "Guardar");
+        const cancelar = el("button", { type: "button", class: "mini sec" }, "Cancelar");
+        const confirmar = async () => {
+          const t = inp.value.trim();
+          if (!t || t === d.texto) return pintar();
+          guardar.disabled = true;
+          try {
+            d = await api(`/api/mensajes/${c.id}/${d.id}`, { method: "PUT", body: { texto: t } });
+            mostrarError("msg-app", null);
+            pintar();
+          } catch (e) { guardar.disabled = false; mostrarError("msg-app", e); }
+        };
+        guardar.addEventListener("click", confirmar);
+        cancelar.addEventListener("click", () => pintar());
+        inp.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); confirmar(); }
+          if (ev.key === "Escape") pintar();
+        });
+        nodo.replaceChildren(inp, el("div", { class: "msg-edit" }, guardar, cancelar));
+        inp.focus();
+      };
+
+      const borrar = async (para) => {
+        const aviso = para === "todos" ? "¿Eliminar este mensaje para todos?" : "¿Eliminar este mensaje solo para ti?";
+        if (!confirm(aviso)) return;
+        try {
+          await api(`/api/mensajes/${c.id}/${d.id}?para=${para}`, { method: "DELETE" });
+          mostrarError("msg-app", null);
+          if (para === "mi") quitar();
+          else { d = { ...d, eliminado: true, texto: "" }; pintar(); }
+        } catch (e) { mostrarError("msg-app", e); }
+      };
+
+      function pintar() {
+        nodo.classList.toggle("eliminada", d.eliminado);
+        const menu = el("div", { class: "msg-menu", hidden: "" });
+        const opcion = (txt, fn) => el("button", { type: "button", onclick: () => { menu.hidden = true; fn(); } }, txt);
+        if (d.mio && !d.eliminado) menu.append(opcion("Editar", editar));
+        menu.append(opcion("Eliminar para mí", () => borrar("mi")));
+        if (d.mio && !d.eliminado) menu.append(opcion("Eliminar para todos", () => borrar("todos")));
+        const abrirMenu = el("button", { type: "button", class: "msg-opc", "aria-label": "Opciones del mensaje",
+          onclick: () => { menu.hidden = !menu.hidden; } }, "⋯");
+        nodo.replaceChildren(
+          el("p", { class: "texto" + (d.eliminado ? " msg-borrado" : "") }, d.eliminado ? "Se eliminó este mensaje" : d.texto),
+          el("div", { class: "msg-pie" }, el("small", {}, fecha(d.fecha) + (d.editado ? " · editado" : "")), abrirMenu),
+          menu);
+      }
+
+      pintar();
+      nodos.set(d.id, (nuevo) => { d = nuevo; pintar(); });
+      return nodo;
+    };
+
+    // Trae lo editado/eliminado por la otra persona desde la ultima vez
+    const sincronizar = async () => {
+      const r = await api(`/api/mensajes/${c.id}/cambios` + (sync ? `?desde=${encodeURIComponent(sync)}` : ""));
+      sync = r.ahora;
+      for (const m of r.cambios) { const act = nodos.get(m.id); if (act) act(m); }
+    };
     const traer = async (forzar = false) => {
       const msgs = await api(`/api/mensajes/${c.id}` + (ultimoId ? `?despues=${ultimoId}` : ""));
       if (!msgs.length) return;
@@ -662,25 +853,22 @@ async function cargarMensajes(abrirId = null) {
     });
 
     panelChat.replaceChildren(
-      el("div", { class: "chat-cab" }, conPerfil(avatar(c.nombres, true, c.foto), c.id), nombreLink(c.id, c.nombres)), caja, form);
+      el("div", { class: "chat-cab" }, avatar(c.nombres, true, c.foto), el("strong", {}, c.nombres)), caja, form);
     pintarLista();
+    await sincronizar();          // punto de partida de los cambios en vivo
     await traer(true);
     if (!ultimoId) caja.append(el("p", { class: "muted vacio" }, "Aún no hay mensajes. ¡Saluda!"));
-    traerActivo = traer;
+    traerActivo = async () => { await traer(); await sincronizar(); };
     inp.focus();
     actualizarBadge();
   };
 
-  // Cada 4 s: trae mensajes nuevos del chat abierto. La lista de conversaciones se refresca cada 12 s
-  // (cada 3er ciclo) para no duplicar las consultas a la base de datos.
-  let ciclo = 0;
+  // Cada 4 s: trae mensajes nuevos del chat abierto y refresca la lista (no leidos, ultimo mensaje)
   const tick = async () => {
     if (document.hidden) return;
     try { if (traerActivo) await traerActivo(); }
     catch (e) { traerActivo = null; mostrarError("msg-app", e); }
-    if (++ciclo % 3 === 0) {
-      try { convs = await api("/api/mensajes"); pintarLista(); } catch { /* se reintenta */ }
-    }
+    try { convs = await api("/api/mensajes"); pintarLista(); } catch { /* se reintenta */ }
   };
 
   convs = await api("/api/mensajes");
@@ -696,7 +884,7 @@ async function cargarMensajes(abrirId = null) {
 
 /* ===================== Mi perfil ===================== */
 async function cargarPerfil() {
-  const [u, arbol] = await Promise.all([api("/api/me"), arbolUnidades()]);
+  const [u, arbol] = await Promise.all([api("/api/me"), api("/api/unidades-publicas")]);
   const campo = (etiqueta, control) => el("label", {}, etiqueta, control);
   const nombres = el("input", { value: u.nombres, maxlength: "80", required: "" });
   const bio = el("textarea", { maxlength: "160", placeholder: "Cuéntale a San Marcos quién eres (máx. 160 caracteres)" });
@@ -753,6 +941,42 @@ async function cargarPerfil() {
             el("button", { type: "button", class: "mini", onclick: () => archivo.click() }, u.foto ? "Cambiar foto" : "Subir foto"),
             ...(u.foto ? [el("button", { type: "button", class: "mini sec", onclick: quitarFoto }, "Quitar foto")] : []), archivo)))),
     el("div", { class: "card" }, el("h2", {}, "Editar perfil"), form));
+}
+
+/* ===================== Configuracion ===================== */
+function cargarConfig() {
+  const valor = el("strong", {}, `${fuentePx} px`);
+  const rango = el("input", { type: "range", min: String(FUENTE_MIN), max: String(FUENTE_MAX), step: "1",
+    value: String(fuentePx), "aria-label": "Tamaño de letra" });
+  const poner = (px) => {
+    px = Math.min(FUENTE_MAX, Math.max(FUENTE_MIN, px));
+    aplicarFuente(px);
+    rango.value = String(px);
+    valor.textContent = `${px} px`;
+  };
+  rango.addEventListener("input", () => poner(Number(rango.value)));
+
+  const menos = el("button", { type: "button", class: "sec mini", "aria-label": "Reducir letra", onclick: () => poner(fuentePx - 1) }, "A−");
+  const mas = el("button", { type: "button", class: "sec mini", "aria-label": "Aumentar letra", onclick: () => poner(fuentePx + 1) }, "A+");
+  const reset = el("button", { type: "button", class: "mini", onclick: () => poner(FUENTE_DEF) }, "Restablecer");
+
+  const botonesTema = TEMAS.map((t) => el("button", { type: "button", class: t === temaPref ? "activo" : "",
+    onclick: () => {
+      aplicarTema(t);
+      botonesTema.forEach((b, i) => b.classList.toggle("activo", TEMAS[i] === t));
+    } }, { claro: "Claro", oscuro: "Oscuro", auto: "Automático" }[t]));
+
+  $("vista-config").replaceChildren(
+    el("div", { class: "card" }, el("h2", {}, "Apariencia"),
+      el("p", { class: "muted" }, "Elige el tema de la aplicación. «Automático» sigue el modo de tu dispositivo."),
+      el("div", { class: "segmento tres" }, ...botonesTema)),
+    el("div", { class: "card" }, el("h2", {}, "Tamaño de letra"),
+      el("p", { class: "muted" }, "Ajusta el tamaño del texto de toda la aplicación. Se guarda en este navegador."),
+      el("div", { class: "config-fila" }, menos, rango, mas, valor),
+      el("div", { class: "config-fila" }, reset),
+      el("div", { class: "config-muestra" },
+        el("strong", {}, "Así se ve tu texto"),
+        el("p", {}, "Bienvenido a LogKeate, la red social de los sanmarquinos."))));
 }
 
 iniciar();

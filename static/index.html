@@ -5,19 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LogKeate · La red de San Marcos</title>
   <link rel="icon" type="image/png" href="/static/logo.png">
-  <script>
-    // Aplica el tema guardado antes de pintar (evita el parpadeo blanco)
-    (function () {
-      var t = null;
-      try { t = localStorage.getItem("tema"); } catch (e) {}
-      if (!t) t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "oscuro" : "claro";
-      document.documentElement.dataset.tema = t;
-    })();
-  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <!-- ===== Autenticacion ===== -->
@@ -29,7 +20,6 @@
     </aside>
 
     <section class="auth-panel">
-      <div class="auth-tema"><button type="button" class="tema-btn" title="Cambiar tema" aria-label="Cambiar entre modo claro y oscuro"></button></div>
       <div class="segmento" role="tablist">
         <button type="button" id="seg-login" class="activo">Iniciar sesión</button>
         <button type="button" id="seg-registro">Crear cuenta</button>
@@ -66,19 +56,17 @@
         <input id="q" type="search" placeholder="Buscar personas o grupos en LogKeate" aria-label="Buscar">
         <div id="sugerencias" class="sugerencias" hidden></div>
       </form>
-      <div class="usuario-top">
-        <button type="button" class="tema-btn" title="Cambiar tema" aria-label="Cambiar entre modo claro y oscuro"></button>
-        <span id="yo"></span><button id="btn-logout" class="sec">Salir</button>
-      </div>
+      <div class="usuario-top"><span id="yo"></span><button id="btn-logout" class="sec">Salir</button></div>
     </header>
 
     <div class="layout">
       <nav class="menu" aria-label="Secciones">
-        <button data-tab="muro" class="activo"><span class="ico">🏠</span>Muro</button>
-        <button data-tab="amigos"><span class="ico">🤝</span>Amistades</button>
-        <button data-tab="mensajes"><span class="ico">✉️</span>Mensajes<span id="badge-msg" class="badge" hidden></span></button>
-        <button data-tab="grupos"><span class="ico">👥</span>Grupos</button>
-        <button data-tab="perfil"><span class="ico">👤</span>Mi perfil</button>
+        <button data-tab="muro" class="activo"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/><path d="M10 19.5v-5h4v5"/></svg></span>Muro</button>
+        <button data-tab="amigos"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17.5 14c2.3.2 3.5 1.9 3.5 4.5"/></svg></span>Amistades</button>
+        <button data-tab="mensajes"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10.5H10l-4.5 3.5V16H4z"/></svg></span>Mensajes<span id="badge-msg" class="badge" hidden></span></button>
+        <button data-tab="grupos"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3"/><circle cx="5.5" cy="10" r="2.2"/><circle cx="18.5" cy="10" r="2.2"/><path d="M6.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M1.5 18c0-2 1.5-3.5 3.5-3.8"/><path d="M22.5 18c0-2-1.5-3.5-3.5-3.8"/></svg></span>Grupos</button>
+        <button data-tab="perfil"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg></span>Mi perfil</button>
+        <button data-tab="config"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></span>Configuración</button>
       </nav>
 
       <main class="contenido">
@@ -86,6 +74,7 @@
         <pre id="panel-resultado" class="codigo" hidden></pre>
 
         <section id="tab-muro">
+          <div id="historias" class="historias"></div>
           <div id="composer-muro"></div>
           <div id="posts"></div>
         </section>
@@ -126,18 +115,14 @@
         <section id="tab-grupos" hidden>
           <div id="vista-grupos"></div>
         </section>
+
+        <section id="tab-config" hidden>
+          <div id="vista-config"></div>
+        </section>
       </main>
     </div>
   </div>
 
-  <!-- Ventana con el perfil de una persona -->
-  <div id="modal-perfil" class="modal-fondo" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Perfil">
-      <button type="button" id="modal-cerrar" class="icono-btn modal-x" aria-label="Cerrar">✕</button>
-      <div id="modal-contenido"></div>
-    </div>
-  </div>
-
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>

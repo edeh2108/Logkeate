@@ -2,6 +2,7 @@
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
+from pymongo.errors import OperationFailure
 
 load_dotenv()
 
@@ -10,6 +11,16 @@ DB_NAME = os.getenv("DB_NAME", "unmsm_social")
 
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=8000)
 db = client[DB_NAME]
+
+
+def _indice_ttl(coleccion, campo="expira"):
+    """Indice TTL: MongoDB borra solo los documentos cuando `campo` (una fecha) ya paso.
+    Si existia un indice normal sobre ese campo (version anterior), se reemplaza."""
+    try:
+        coleccion.create_index(campo, expireAfterSeconds=0)
+    except OperationFailure:
+        coleccion.drop_index(f"{campo}_1")
+        coleccion.create_index(campo, expireAfterSeconds=0)
 
 
 def crear_indices():
@@ -22,8 +33,6 @@ def crear_indices():
     db.friendships.create_index([("u", 1), ("v", 1)], unique=True)    # sin aristas paralelas
     db.friendships.create_index("v")
     db.friend_requests.create_index("par", unique=True)               # una solicitud por pareja
-    db.friend_requests.create_index("emisor")                         # relaciones_con(): buscar por emisor
-    db.friend_requests.create_index("receptor")                       # ... o por receptor
     db.academic_units.create_index("path")
     db.comments.create_index([("post_id", 1), ("creado", 1)])
     db.posts.create_index([("creado", -1)])
@@ -32,8 +41,16 @@ def crear_indices():
     db.likes.create_index([("tipo", 1), ("obj", 1), ("user", 1)], unique=True)   # un usuario, un "me gusta" por objeto
     db.groups.create_index("nombre_norm", unique=True)
     db.group_members.create_index([("grupo_id", 1), ("user", 1)], unique=True)   # pertenencia = par (grupo, usuario) sin repetir
-    db.group_members.create_index("user")
     db.users.create_index("nombres")
     db.messages.create_index([("par", 1), ("_id", 1)])                 # historial de una conversacion
     db.messages.create_index([("receptor", 1), ("leido", 1)])          # contador de no leidos
     db.messages.create_index([("emisor", 1), ("creado", -1)])          # limite de mensajes por minuto
+    db.stories.create_index([("autor", 1), ("creado", 1)])             # historias de un autor
+    # Historias: duran 24 h y MongoDB las borra solas (con su imagen, comentarios y reacciones)
+    _indice_ttl(db.stories)
+    _indice_ttl(db.story_comments)
+    _indice_ttl(db.story_reactions)
+    _indice_ttl(db.images)                                             # solo las imagenes con campo `expira`
+    db.story_comments.create_index([("historia_id", 1), ("creado", 1)])
+    db.story_reactions.create_index([("historia_id", 1), ("user", 1)], unique=True)   # una reaccion por persona
+    db.messages.create_index([("par", 1), ("modificado", 1)])          # cambios (editados/eliminados) del chat
