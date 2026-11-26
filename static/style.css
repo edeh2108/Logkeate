@@ -89,22 +89,17 @@ button.mini { padding: .3rem .75rem; font-size: .85rem; margin: .3rem .3rem 0 0;
 .autor > div { display: grid; line-height: 1.2; }
 .autor .muted { font-size: .8rem; }
 
-/* lista de personas: solo foto, nombre y botones (los datos salen al presionar el nombre) */
-.usuario { display: grid; grid-template-columns: auto 1fr; column-gap: .8rem; align-items: center; padding: .8rem 0; border-bottom: 1px solid var(--linea); }
+.usuario { display: grid; grid-template-columns: auto 1fr; column-gap: .8rem; padding: .8rem 0; border-bottom: 1px solid var(--linea); }
 .usuario:last-child { border-bottom: 0; }
-.usuario > .avatar { grid-row: span 2; }
+.usuario > .avatar { grid-row: span 3; }
 .usuario > div { grid-column: 2; }
 .usuario.foro { display: block; }
 .tipo { font-size: .8rem; color: var(--gris); margin-left: .3rem; }
 .etiqueta { display: inline-block; background: var(--vino-claro); color: var(--vino-texto); border-radius: 999px; padding: .05rem .6rem; font-size: .78rem; font-weight: 500; margin: .2rem .25rem 0 0; }
 .estado { display: inline-block; font-size: .75rem; font-weight: 600; border-radius: 999px; padding: .05rem .6rem; background: var(--suave2); color: var(--gris); }
 .estado.ACEPTADA { background: var(--verde-bg); color: var(--verde); }
-.estado.PENDIENTE { background: var(--ambar-bg); color: var(--ambar); }
+.estado.PENDIENTE { background: var(--blanco)1d1; color: var(--ambar); }
 .estado.BLOQUEADA { background: var(--rojo-bg); color: var(--rojo); }
-
-/* nombre clicable: abre la ventana con los datos de la persona */
-.nombre-link { background: transparent; color: var(--titulo); padding: 0; margin: 0; border-radius: 6px; font-size: 1rem; font-weight: 700; text-align: left; }
-.nombre-link:hover { background: transparent; color: var(--vino-texto); text-decoration: underline; }
 
 /* comentarios y arbol */
 .arbol, .arbol ul, .comentarios, .comentarios ul { list-style: none; padding-left: 0; margin: 0; }
@@ -118,8 +113,8 @@ button.mini { padding: .3rem .75rem; font-size: .85rem; margin: .3rem .3rem 0 0;
 
 /* resultados y matematica discreta */
 .codigo { background: var(--codigo); border: 1px solid var(--linea); border-radius: 10px; padding: .7rem; overflow-x: auto; font-size: .85rem; white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; }
-details.mate { background: var(--ambar-bg); border: 1px solid var(--oro); border-left: 4px solid var(--oro); border-radius: 10px; padding: .55rem .9rem; margin: 1rem 0 0; font-size: .9rem; }
-details.mate summary { cursor: pointer; font-weight: 600; color: var(--ambar); }
+details.mate { background: var(--blanco)af0; border: 1px solid #f0dcae; border-left: 4px solid var(--oro); border-radius: 10px; padding: .55rem .9rem; margin: 1rem 0 0; font-size: .9rem; }
+details.mate summary { cursor: pointer; font-weight: 600; color: #7a5200; }
 .formula { font-family: "Cambria Math", Georgia, serif; font-size: 1rem; background: var(--blanco); border: 1px solid var(--linea); border-radius: 8px; padding: .3rem .6rem; display: inline-block; margin: .2rem 0; }
 table.tv { border-collapse: collapse; font-size: .85rem; background: var(--blanco); margin: .4rem 0; }
 table.tv th, table.tv td { border: 1px solid var(--linea); padding: .2rem .6rem; text-align: center; }
