@@ -42,7 +42,7 @@ function avatar(nombre, peq = false, foto = null, grande = false) {
   return el("span", { class: "avatar" + tam, style: `background:hsl(${h} 45% 38%)` }, ini);
 }
 
-// Ventana flotante generica (nueva historia, visor de historias). Devuelve la funcion para cerrarla.
+// Ventana flotante generica (nueva historia, visor de historias, perfil). Devuelve la funcion para cerrarla.
 function abrirModal(contenido, alCerrar) {
   const fondo = el("div", { class: "modal" });
   const tecla = (ev) => { if (ev.key === "Escape") cerrar(); };
@@ -499,9 +499,10 @@ $("q").addEventListener("input", () => {
   temporizador = setTimeout(async () => {
     try {
       const r = await api(`/api/buscar-rapido?q=${encodeURIComponent(q)}`);
+      // En las sugerencias solo se muestra el nombre (los datos del perfil salen al presionarlo)
       const personas = r.personas.slice(0, 5).map((u) => el("button", { type: "button", class: "sug",
         onclick: () => { $("q").value = u.nombres; buscarTexto(u.nombres).catch((e) => mostrarError("msg-app", e)); } },
-        avatar(u.nombres, true, u.foto), el("span", {}, el("strong", {}, u.nombres), el("small", {}, `${u.escuela} · ciclo ${u.ciclo}`))));
+        avatar(u.nombres, true, u.foto), el("span", {}, el("strong", {}, u.nombres))));
       const grupos = r.grupos.slice(0, 3).map((g) => el("button", { type: "button", class: "sug",
         onclick: () => { $("sugerencias").hidden = true; abrirGrupo(g.id); } },
         avatarGrupo(g, true), el("span", {}, el("strong", {}, g.nombre), el("small", {}, `${g.miembros} miembros`))));
@@ -543,6 +544,27 @@ $("btn-buscar").addEventListener("click", async () => {
 });
 
 /* ===================== Usuarios y amistad (AUTOMATA) ===================== */
+// Ventana con los datos de la persona: solo se abre al presionar su nombre
+function verPerfilUsuario(u) {
+  const rel = u.relacion || { estado: "INEXISTENTE" };
+  const textoEstado = {
+    ACEPTADA: "Son amigos",
+    PENDIENTE: rel.emisor_soy_yo ? "Solicitud enviada" : "Te envió una solicitud",
+    RECHAZADA: "Solicitud rechazada",
+    BLOQUEADA: "Bloqueado",
+  }[rel.estado];
+  let cerrar;
+  const caja = el("div", { class: "modal-caja" },
+    el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
+      el("div", {}, el("h2", {}, u.nombres),
+        el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
+        ...(textoEstado ? [el("span", { class: `estado ${rel.estado}` }, textoEstado)] : []))),
+    ...(u.bio ? [el("p", {}, u.bio)] : []),
+    ...(u.intereses.length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))] : []),
+    el("button", { type: "button", class: "sec", onclick: () => cerrar() }, "Cerrar"));
+  cerrar = abrirModal(caja);
+}
+
 function itemUsuario(u) {
   const rel = u.relacion || { estado: "INEXISTENTE" };
   const btn = (txt, fn, clase = "") => el("button", { class: `mini ${clase}`, onclick: fn }, txt);
@@ -563,12 +585,10 @@ function itemUsuario(u) {
   }
   if (rel.estado !== "BLOQUEADA") botones.push(btn("Bloquear", acc("bloquear"), "peligro"));
 
+  // En la lista solo se ve el nombre; el resto de datos aparece al presionarlo
   return el("div", { class: "usuario" }, avatar(u.nombres, false, u.foto),
-    el("div", {}, el("strong", {}, u.nombres),
-      el("span", { class: "tipo" }, `${u.facultad} · ${u.escuela} · ciclo ${u.ciclo}`),
-      ...(u.bio ? [el("div", { class: "muted" }, u.bio)] : [])),
-    el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)),
-      " ", el("span", { class: `estado ${rel.estado}` }, rel.estado)),
+    el("div", {}, el("button", { type: "button", class: "nombre-link", title: "Ver perfil",
+      onclick: () => verPerfilUsuario(u) }, u.nombres)),
     el("div", {}, ...botones));
 }
 
