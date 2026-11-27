@@ -295,3 +295,6 @@ img.avatar { object-fit: cover; background: var(--suave2); }
 
 /* ---------- aviso de reportes (solo lo ve la cuenta reportada) ---------- */
 .aviso { background: var(--ambar-bg); color: var(--ambar); border: 1px solid var(--oro); border-left: 4px solid var(--oro); border-radius: 10px; padding: .7rem 1rem; margin-bottom: 1rem; font-weight: 500; }
+
+/* ---------- chat en solo lectura (bloqueo o amistad eliminada) ---------- */
+.aviso-chat { margin: 0; padding: .8rem 1rem; border-top: 1px solid var(--linea); text-align: center; background: var(--suave); border-radius: 0 0 var(--radio) var(--radio); }

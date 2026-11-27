@@ -58,3 +58,6 @@ def crear_indices():
     db.reports.create_index([("reportado", 1), ("reportante", 1)], unique=True,
                             partialFilterExpression={"activo": True})
     db.reports.create_index("reportado")
+    db.reports.create_index("reportante")
+    db.friend_requests.create_index("receptor")                        # contador de solicitudes recibidas
+    db.friend_requests.create_index("emisor")

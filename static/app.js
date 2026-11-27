@@ -603,6 +603,7 @@ function reportarUsuario(u) {
     enviar.disabled = true;
     try {
       await api(`/api/reportar/${u.id}`, { method: "POST", body: { motivo: motivo.value, detalle: detalle.value } });
+      refrescarVista().catch(() => {});
       caja.replaceChildren(el("h2", {}, "Reporte enviado"),
         el("p", {}, "Gracias. La otra cuenta no sabrá quién la reportó."),
         el("button", { type: "button", onclick: () => cerrar() }, "Cerrar"));
@@ -611,30 +612,11 @@ function reportarUsuario(u) {
 }
 
 /* ===================== Usuarios y amistad (AUTOMATA) ===================== */
-// Ventana con los datos de la persona: solo se abre al presionar su nombre
-function verPerfilUsuario(u) {
+// Botones de accion segun la relacion: se muestran dentro de la ventana del perfil
+function botonesAccion(u, cerrar) {
   const rel = u.relacion || { estado: "INEXISTENTE" };
-  const textoEstado = {
-    ACEPTADA: "Son amigos",
-    PENDIENTE: rel.emisor_soy_yo ? "Solicitud enviada" : "Te envió una solicitud",
-    RECHAZADA: "Solicitud rechazada",
-    BLOQUEADA: "Bloqueado",
-  }[rel.estado];
-  let cerrar;
-  const caja = el("div", { class: "modal-caja" },
-    el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
-      el("div", {}, el("h2", {}, u.nombres),
-        el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
-        ...(textoEstado ? [el("span", { class: `estado ${rel.estado}` }, textoEstado)] : []))),
-    ...(u.bio ? [el("p", {}, u.bio)] : []),
-    ...(u.intereses.length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))] : []),
-    el("button", { type: "button", class: "sec", onclick: () => cerrar() }, "Cerrar"));
-  cerrar = abrirModal(caja);
-}
-
-function itemUsuario(u) {
-  const rel = u.relacion || { estado: "INEXISTENTE" };
-  const btn = (txt, fn, clase = "") => el("button", { class: `mini ${clase}`, onclick: fn }, txt);
+  const btn = (txt, fn, clase = "") => el("button", { type: "button", class: `mini ${clase}`,
+    onclick: () => { cerrar(); fn(); } }, txt);
   const acc = (evento) => () => accionAmistad(u.id, evento);
   const botones = [];
 
@@ -651,23 +633,65 @@ function itemUsuario(u) {
       if (rel.bloqueado_por_mi) botones.push(btn("Desbloquear", acc("desbloquear")));
   }
   if (rel.estado !== "BLOQUEADA") botones.push(btn("Bloquear", acc("bloquear"), "peligro"));
-  botones.push(btn("Reportar", () => reportarUsuario(u), "peligro"));
+  // Reportar: una sola vez por cuenta, y se puede cancelar mientras el reporte siga activo
+  if (rel.reporte === "activo") botones.push(btn("Cancelar reporte", () => cancelarReporte(u), "sec"));
+  else if (rel.reporte === "cerrado") botones.push(el("span", { class: "muted" }, "Ya reportaste a esta cuenta"));
+  else botones.push(btn("Reportar", () => reportarUsuario(u), "peligro"));
+  return botones;
+}
 
-  // En la lista solo se ve el nombre; el resto de datos aparece al presionarlo
+// Ventana con los datos de la persona y sus acciones: solo se abre al presionar su nombre
+function verPerfilUsuario(u) {
+  const rel = u.relacion || { estado: "INEXISTENTE" };
+  const textoEstado = {
+    ACEPTADA: "Son amigos",
+    PENDIENTE: rel.emisor_soy_yo ? "Solicitud enviada" : "Te envió una solicitud",
+    RECHAZADA: "Solicitud rechazada",
+    BLOQUEADA: "Bloqueado",
+  }[rel.estado];
+  let cerrar;
+  const caja = el("div", { class: "modal-caja" },
+    el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
+      el("div", {}, el("h2", {}, u.nombres),
+        el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
+        ...(textoEstado ? [el("span", { class: `estado ${rel.estado}` }, textoEstado)] : []))),
+    ...(u.bio ? [el("p", {}, u.bio)] : []),
+    ...(u.intereses.length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))] : []),
+    el("div", { class: "acciones" }, ...botonesAccion(u, () => cerrar())),
+    el("button", { type: "button", class: "sec", onclick: () => cerrar() }, "Cerrar"));
+  cerrar = abrirModal(caja);
+}
+
+// En las listas solo se ve la foto y el nombre; todo lo demas sale al presionarlo
+function itemUsuario(u) {
   return el("div", { class: "usuario" }, avatar(u.nombres, false, u.foto),
     el("div", {}, el("button", { type: "button", class: "nombre-link", title: "Ver perfil",
-      onclick: () => verPerfilUsuario(u) }, u.nombres)),
-    el("div", {}, ...botones));
+      onclick: () => verPerfilUsuario(u) }, u.nombres)));
+}
+
+// Vuelve a pintar la lista que se esta viendo (busqueda o amistades) y actualiza los globos
+async function refrescarVista() {
+  if (tabActual === "buscar") {
+    if (ultimaConsulta) await buscarTexto(ultimaConsulta, true);
+    if (ultimoFiltro) await ejecutarBusqueda();
+  } else if (tabActual === "amigos") await cargarAmigos();
+  actualizarBadge();
 }
 
 async function accionAmistad(id, evento) {
   try {
     await api(`/api/amistad/${id}/${evento}`, { method: "POST" });
     mostrarError("msg-app", null);
-    if (tabActual === "buscar") {
-      if (ultimaConsulta) await buscarTexto(ultimaConsulta, true);
-      if (ultimoFiltro) await ejecutarBusqueda();
-    } else if (tabActual === "amigos") await cargarAmigos();
+    await refrescarVista();
+  } catch (e) { mostrarError("msg-app", e); }
+}
+
+async function cancelarReporte(u) {
+  if (!confirm(`¿Cancelar tu reporte contra ${u.nombres}?`)) return;
+  try {
+    await api(`/api/reportar/${u.id}`, { method: "DELETE" });
+    mostrarError("msg-app", null);
+    await refrescarVista();
   } catch (e) { mostrarError("msg-app", e); }
 }
 
@@ -793,11 +817,18 @@ let sondeo = null;            // temporizador que actualiza el chat abierto
 let badgeIniciado = false;
 function detenerSondeo() { clearInterval(sondeo); sondeo = null; }
 
+function pintarBadge(id, total) {
+  const b = $(id);
+  b.textContent = total > 99 ? "99+" : String(total);
+  b.hidden = total === 0;
+}
+
+// Globos del menu: mensajes sin leer y solicitudes de amistad recibidas
 async function actualizarBadge() {
   try {
-    const { total } = await api("/api/mensajes-no-leidos");
-    $("badge-msg").textContent = total > 99 ? "99+" : String(total);
-    $("badge-msg").hidden = total === 0;
+    const n = await api("/api/notificaciones");
+    pintarBadge("badge-msg", n.mensajes);
+    pintarBadge("badge-amigos", n.solicitudes);
   } catch { /* sin sesion o sin red: se reintenta en el siguiente ciclo */ }
 }
 
@@ -929,7 +960,8 @@ async function cargarMensajes(abrirId = null) {
     });
 
     panelChat.replaceChildren(
-      el("div", { class: "chat-cab" }, avatar(c.nombres, true, c.foto), el("strong", {}, c.nombres)), caja, form);
+      el("div", { class: "chat-cab" }, avatar(c.nombres, true, c.foto), el("strong", {}, c.nombres)), caja,
+      c.puede_escribir === false ? el("p", { class: "muted aviso-chat" }, c.aviso) : form);
     pintarLista();
     await sincronizar();          // punto de partida de los cambios en vivo
     await traer(true);

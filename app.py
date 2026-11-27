@@ -115,11 +115,18 @@ def publico(u, rel=None):
     return out
 
 
-def resumen_relacion(me, doc):
+def reportes_mios():
+    """{id de la cuenta que reporte: 'activo' | 'cerrado'}. 'activo' se puede cancelar; 'cerrado' ya se uso en una suspension."""
+    return {r["reportado"]: ("activo" if r.get("activo") else "cerrado")
+            for r in db.reports.find({"reportante": yo()}, {"reportado": 1, "activo": 1})}
+
+
+def resumen_relacion(me, doc, otro_id=None, reportes=None):
+    base = {"reporte": (reportes or {}).get(otro_id)}
     if not doc:
-        return {"estado": "INEXISTENTE"}
+        return {"estado": "INEXISTENTE", **base}
     return {"estado": doc["estado"], "emisor_soy_yo": doc["emisor"] == me,
-            "bloqueado_por_mi": doc.get("bloqueado_por") == me}
+            "bloqueado_por_mi": doc.get("bloqueado_por") == me, **base}
 
 
 # huella y codigo son datos internos: nunca salen en las respuestas de la API
@@ -295,7 +302,8 @@ def buscar():
     bloqueadores = [ObjectId(k) for k, v in rels.items()
                     if v["estado"] == "BLOQUEADA" and v.get("bloqueado_por") != yo_id]
     q = {"$and": [consulta, {"_id": {"$ne": yo_id}}, {"_id": {"$nin": bloqueadores}}]}
-    res = [publico(u, resumen_relacion(yo_id, rels.get(str(u["_id"]))))
+    reps = reportes_mios()
+    res = [publico(u, resumen_relacion(yo_id, rels.get(str(u["_id"])), u["_id"], reps))
            for u in db.users.find(q, PROY).limit(50)]
     return jsonify(resultados=res, consulta_mongo=consulta)
 
@@ -345,6 +353,7 @@ def amistad(otro, evento):
 def amigos():
     me_id = yo()
     rels = servicios.relaciones_con(me_id)
+    reps = reportes_mios()
     ids = [ObjectId(k) for k in rels]
     users = {str(u["_id"]): u for u in db.users.find({"_id": {"$in": ids}}, PROY)}
     out = {"amigos": [], "recibidas": [], "enviadas": [], "bloqueados": []}
@@ -352,7 +361,7 @@ def amigos():
         u = users.get(k)
         if not u:
             continue
-        p = publico(u, resumen_relacion(me_id, d))
+        p = publico(u, resumen_relacion(me_id, d, u["_id"], reps))
         if d["estado"] == "ACEPTADA":
             out["amigos"].append(p)
         elif d["estado"] == "PENDIENTE":
@@ -870,6 +879,40 @@ def exigir_amistad(otro_id):
         raise ErrorApi("Solo puedes chatear con tus amigos", 403)
 
 
+def contactos_chat(me_id):
+    """Personas con las que tengo chat: mis amigos y cualquiera con quien ya hay mensajes
+    (un bloqueo o eliminar la amistad NO borra la conversacion de ninguno de los dos)."""
+    previos = set(db.messages.distinct("emisor", {"receptor": me_id})) | \
+        set(db.messages.distinct("receptor", {"emisor": me_id}))
+    return list(set(servicios.vecinos(me_id)) | previos)
+
+
+def estado_chat(me_id, doc):
+    """Si ya no pueden escribirse, el historial se conserva en solo lectura."""
+    estado = doc["estado"] if doc else None
+    if estado == "ACEPTADA":
+        return {"puede_escribir": True, "aviso": ""}
+    if estado == "BLOQUEADA" and doc.get("bloqueado_por") == me_id:
+        return {"puede_escribir": False,
+                "aviso": "Bloqueaste a esta persona. Puedes ver el historial, pero no enviar mensajes."}
+    if estado == "BLOQUEADA":
+        return {"puede_escribir": False, "aviso": "Ya no puedes enviar mensajes a esta persona."}
+    return {"puede_escribir": False,
+            "aviso": "Ya no son amigos: puedes ver el historial, pero no enviar mensajes."}
+
+
+def exigir_conversacion(otro_id):
+    """Para LEER el chat: amigos, o personas con historial en comun (aunque haya bloqueo)."""
+    if otro_id == yo():
+        raise ErrorApi("No puedes escribirte a ti mismo")
+    par = servicios.clave_par(yo(), otro_id)
+    doc = db.friend_requests.find_one({"par": par}, {"estado": 1})
+    if doc and doc["estado"] == "ACEPTADA":
+        return
+    if not db.messages.find_one({"par": par}, {"_id": 1}):
+        raise ErrorApi("Solo puedes chatear con tus amigos", 403)
+
+
 def json_mensaje(m):
     eliminado = bool(m.get("eliminado"))
     return {"id": str(m["_id"]), "mio": m["emisor"] == yo(), "texto": "" if eliminado else m["texto"],
@@ -882,7 +925,8 @@ def json_mensaje(m):
 def conversaciones():
     """Una conversacion por amigo, con el ultimo mensaje y los no leidos."""
     me_id = yo()
-    amigos_ids = servicios.vecinos(me_id)
+    amigos_ids = contactos_chat(me_id)          # amigos + personas con historial (aunque haya bloqueo)
+    rels = servicios.relaciones_con(me_id)
     pares = {servicios.clave_par(me_id, a): a for a in amigos_ids}
     ultimos = {d["_id"]: d["m"] for d in db.messages.aggregate([
         {"$match": {"par": {"$in": list(pares)}, "borrado_para": {"$ne": me_id}}}, {"$sort": {"_id": -1}},
@@ -903,7 +947,8 @@ def conversaciones():
                     "ultimo": (("Tú: " if m["emisor"] == me_id else "")
                              + ("Se eliminó este mensaje" if m.get("eliminado") else m["texto"]))[:60] if m else "",
                     "fecha": m["creado"].isoformat() if m else None,
-                    "no_leidos": sin_leer.get(a, 0)})
+                    "no_leidos": sin_leer.get(a, 0),
+                    **estado_chat(me_id, rels.get(str(a)))})
     out.sort(key=lambda c: c["nombres"].lower())
     out.sort(key=lambda c: c["fecha"] or "", reverse=True)       # recientes primero, sin mensajes al final
     return jsonify(out)
@@ -912,10 +957,13 @@ def conversaciones():
 @app.get("/api/mensajes-no-leidos")
 @login_required
 def mensajes_no_leidos():
-    total = db.messages.count_documents(
-        {"receptor": yo(), "leido": False, "emisor": {"$in": servicios.vecinos(yo())},
+    return jsonify(total=contar_no_leidos())
+
+
+def contar_no_leidos():
+    return db.messages.count_documents(
+        {"receptor": yo(), "leido": False, "emisor": {"$in": contactos_chat(yo())},
          "eliminado": {"$ne": True}, "borrado_para": {"$ne": yo()}})
-    return jsonify(total=total)
 
 
 @app.get("/api/mensajes/<otro>")
@@ -923,7 +971,7 @@ def mensajes_no_leidos():
 def historial(otro):
     """Sin parametros: los ultimos 50. Con ?despues=<id>: solo los mensajes nuevos (para actualizar el chat)."""
     otro_id = oid(otro)
-    exigir_amistad(otro_id)
+    exigir_conversacion(otro_id)
     par = servicios.clave_par(yo(), otro_id)
     despues = request.args.get("despues")
     visibles = {"par": par, "borrado_para": {"$ne": yo()}}          # lo que borre "para mi" no se ve
@@ -959,7 +1007,7 @@ def cambios_mensajes(otro):
     """Mensajes editados o eliminados desde `desde` (asi el otro usuario ve los cambios en vivo).
     Sin `desde` solo devuelve la hora del servidor, que sirve como punto de partida."""
     otro_id = oid(otro)
-    exigir_amistad(otro_id)
+    exigir_conversacion(otro_id)
     ahora = datetime.now(timezone.utc)                # se toma ANTES de consultar para no perder cambios
     desde = request.args.get("desde")
     if not desde:
@@ -976,7 +1024,7 @@ def cambios_mensajes(otro):
 
 
 def mensaje_del_chat(otro_id, mid):
-    exigir_amistad(otro_id)
+    exigir_conversacion(otro_id)
     m = db.messages.find_one({"_id": oid(mid), "par": servicios.clave_par(yo(), otro_id)})
     if not m or yo() in m.get("borrado_para", []):
         raise ErrorApi("Mensaje no encontrado", 404)
@@ -987,6 +1035,7 @@ def mensaje_del_chat(otro_id, mid):
 @login_required
 def editar_mensaje(otro, mid):
     m = mensaje_del_chat(oid(otro), mid)
+    exigir_amistad(oid(otro))                       # no se editan mensajes si ya no son amigos / hay bloqueo
     if m["emisor"] != yo():
         raise ErrorApi("Solo puedes editar tus propios mensajes", 403)
     if m.get("eliminado"):
@@ -1006,6 +1055,7 @@ def borrar_mensaje(otro, mid):
     m = mensaje_del_chat(oid(otro), mid)
     para = request.args.get("para", "mi")
     if para == "todos":
+        exigir_amistad(oid(otro))
         if m["emisor"] != yo():
             raise ErrorApi("Solo puedes eliminar para todos tus propios mensajes", 403)
         db.messages.update_one({"_id": m["_id"]},
@@ -1034,6 +1084,8 @@ def reportar(otro):
         raise ErrorApi("Motivo invalido")
     detalle = str(d.get("detalle", "")).strip()[:200]
     ahora = datetime.now(timezone.utc)
+    if db.reports.find_one({"reportado": otro_id, "reportante": yo()}, {"_id": 1}):
+        raise ErrorApi("Ya reportaste a esta cuenta", 409)
     try:
         db.reports.insert_one({"reportado": otro_id, "reportante": yo(), "motivo": motivo,
                                "detalle": detalle, "creado": ahora, "activo": True})
@@ -1054,6 +1106,25 @@ def mis_reportes():
     return jsonify(reportes=n, limite=REPORTES_LIMITE, dias=DIAS_SUSPENSION)
 
 
+@app.delete("/api/reportar/<otro>")
+@login_required
+def cancelar_reporte(otro):
+    """Retira mi reporte mientras siga activo (si ya provoco una suspension, ya no se puede retirar)."""
+    r = db.reports.delete_one({"reportado": oid(otro), "reportante": yo(), "activo": True})
+    if not r.deleted_count:
+        raise ErrorApi("No tienes un reporte activo contra esta cuenta", 404)
+    return jsonify(ok=True)
+
+
+# ---------- notificaciones (globos del menu) ----------
+@app.get("/api/notificaciones")
+@login_required
+def notificaciones():
+    """Mensajes sin leer + solicitudes de amistad recibidas pendientes."""
+    solicitudes = db.friend_requests.count_documents({"receptor": yo(), "estado": "PENDIENTE"})
+    return jsonify(mensajes=contar_no_leidos(), solicitudes=solicitudes)
+
+
 # ---------- buscador rapido (personas y grupos) ----------
 @app.get("/api/buscar-rapido")
 @login_required
@@ -1068,7 +1139,8 @@ def buscar_rapido():
                     if v["estado"] == "BLOQUEADA" and v.get("bloqueado_por") != yo_id]
     filtro = {"$and": [{"$or": [{"nombres": rx}, {"escuela": rx}, {"facultad": rx}]},
                        {"_id": {"$ne": yo_id}}, {"_id": {"$nin": bloqueadores}}]}
-    personas = [publico(u, resumen_relacion(yo_id, rels.get(str(u["_id"]))))
+    reps = reportes_mios()
+    personas = [publico(u, resumen_relacion(yo_id, rels.get(str(u["_id"])), u["_id"], reps))
                 for u in db.users.find(filtro, PROY).limit(20)]
     return jsonify(personas=personas, grupos=[resumen_grupo(g, yo_id) for g in db.groups.find({"nombre": rx}).limit(10)])
 
