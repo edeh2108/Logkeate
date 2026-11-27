@@ -292,3 +292,6 @@ img.avatar { object-fit: cover; background: var(--suave2); }
 .perfil-cab h2 { margin-bottom: .1rem; }
 .ok { color: var(--verde); font-weight: 500; min-height: 1.2rem; margin: 0; }
 #yo { cursor: pointer; }
+
+/* ---------- aviso de reportes (solo lo ve la cuenta reportada) ---------- */
+.aviso { background: var(--ambar-bg); color: var(--ambar); border: 1px solid var(--oro); border-left: 4px solid var(--oro); border-radius: 10px; padding: .7rem 1rem; margin-bottom: 1rem; font-weight: 500; }

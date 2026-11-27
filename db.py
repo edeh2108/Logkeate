@@ -54,3 +54,7 @@ def crear_indices():
     db.story_comments.create_index([("historia_id", 1), ("creado", 1)])
     db.story_reactions.create_index([("historia_id", 1), ("user", 1)], unique=True)   # una reaccion por persona
     db.messages.create_index([("par", 1), ("modificado", 1)])          # cambios (editados/eliminados) del chat
+    # Reportes: una cuenta solo puede reportar a otra UNA vez por ciclo (mientras el reporte siga activo)
+    db.reports.create_index([("reportado", 1), ("reportante", 1)], unique=True,
+                            partialFilterExpression={"activo": True})
+    db.reports.create_index("reportado")

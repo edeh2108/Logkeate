@@ -23,7 +23,14 @@ async function api(url, opts = {}) {
     body: opts.form || (opts.body ? JSON.stringify(opts.body) : undefined),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Error de servidor");
+  if (!res.ok) {
+    // Si te suspenden con la app abierta, el servidor cierra la sesion: se avisa y se vuelve al inicio
+    if (res.status === 403 && /suspendida/i.test(data.error || "") && !$("vista-app").hidden) {
+      alert(data.error);
+      location.reload();
+    }
+    throw new Error(data.error || "Error de servidor");
+  }
   return data;
 }
 
@@ -128,7 +135,11 @@ function entrarApp(u) {
   $("vista-auth").hidden = true;
   $("vista-app").hidden = false;
   pintarChip(u);
-  cargarPosts();
+  // Entrada base del historial: "atras" desde aqui sale de la app. Si recargas en #perfil, vuelves a #perfil.
+  const inicial = location.hash.slice(1);
+  const tab = CARGADORES[inicial] && inicial !== "buscar" ? inicial : "muro";
+  history.replaceState({ tab }, "", "#" + tab);
+  irA(tab, true, false).catch((e) => mostrarError("msg-app", e));
   if (!badgeIniciado) { badgeIniciado = true; actualizarBadge(); setInterval(actualizarBadge, 20000); }
 }
 
@@ -157,19 +168,35 @@ $("btn-logout").addEventListener("click", async () => {
   location.reload();
 });
 
-/* ===================== Navegacion (menu izquierdo) ===================== */
+/* ===================== Navegacion (menu izquierdo + historial del navegador) ===================== */
 let tabActual = "muro";
 const CARGADORES = { muro: cargarPosts, buscar: async () => {}, amigos: cargarAmigos, mensajes: cargarMensajes, grupos: listarGrupos, perfil: cargarPerfil, config: cargarConfig };
 
-async function irA(tab, cargar = true) {
+// empujar = true: guarda la seccion en el historial (para que "atras" vuelva a la anterior de la app)
+async function irA(tab, cargar = true, empujar = true) {
   detenerSondeo();
   tabActual = tab;
+  const est = history.state || {};
+  if (empujar && !(est.tab === tab && !est.id)) history.pushState({ tab }, "", "#" + tab);
   document.querySelectorAll(".menu button").forEach((x) => x.classList.toggle("activo", x.dataset.tab === tab));
   document.querySelectorAll(".contenido > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   mostrarError("msg-app", null);
   $("panel-resultado").hidden = true;
+  avisoReportes();
   if (cargar) await CARGADORES[tab]();
 }
+
+// Boton "atras" / "adelante" del navegador y gesto "atras" del celular
+window.addEventListener("popstate", (ev) => {
+  document.querySelectorAll(".modal").forEach((m) => m.click());   // cierra ventanas abiertas (perfil, historias...)
+  if ($("vista-app").hidden) return;
+  const s = ev.state || {};
+  const tab = CARGADORES[s.tab] ? s.tab : "muro";
+  const p = tab === "grupos" && s.id ? abrirGrupo(s.id, false)
+    : tab === "mensajes" && s.id ? abrirMensajes(s.id, false)
+    : irA(tab, true, false);
+  p.catch((e) => mostrarError("msg-app", e));
+});
 
 document.querySelectorAll(".menu button").forEach((b) =>
   b.addEventListener("click", () => irA(b.dataset.tab).catch((e) => mostrarError("msg-app", e))));
@@ -543,6 +570,46 @@ $("btn-buscar").addEventListener("click", async () => {
   try { await ejecutarBusqueda(); } catch (e) { mostrarError("msg-app", e); }
 });
 
+/* ===================== Reportes (aviso para la cuenta reportada + ventana de reporte) ===================== */
+// Solo la cuenta reportada ve este aviso; nunca se revela quien la reporto
+async function avisoReportes() {
+  try {
+    const r = await api("/api/mis-reportes");
+    const c = $("aviso-reportes");
+    if (r.reportes > 0) {
+      c.textContent = `⚠️ Tu cuenta fue reportada por ${r.reportes} de ${r.limite} cuentas. ` +
+        `Si llegas a ${r.limite} reportes, tu cuenta se suspenderá por ${r.dias} días.`;
+      c.hidden = false;
+    } else c.hidden = true;
+  } catch { /* sin sesion: se ignora */ }
+}
+
+const MOTIVOS_REPORTE = { spam: "Spam", acoso: "Acoso o insultos", suplantacion: "Suplantación de identidad",
+  contenido_inapropiado: "Contenido inapropiado", otro: "Otro" };
+
+function reportarUsuario(u) {
+  const motivo = el("select", {}, el("option", { value: "" }, "Elige un motivo…"),
+    ...Object.entries(MOTIVOS_REPORTE).map(([k, v]) => el("option", { value: k }, v)));
+  const detalle = el("textarea", { maxlength: "200", placeholder: "Detalles (opcional)" });
+  const msg = el("p", { class: "error", role: "alert" });
+  const enviar = el("button", { type: "button" }, "Enviar reporte");
+  const cancelar = el("button", { type: "button", class: "sec" }, "Cancelar");
+  const caja = el("div", { class: "modal-caja" }, el("h2", {}, `Reportar a ${u.nombres}`),
+    motivo, detalle, msg, el("div", { class: "barra" }, enviar, cancelar));
+  const cerrar = abrirModal(caja);
+  cancelar.addEventListener("click", () => cerrar());
+  enviar.addEventListener("click", async () => {
+    if (!motivo.value) { msg.textContent = "Elige un motivo"; return; }
+    enviar.disabled = true;
+    try {
+      await api(`/api/reportar/${u.id}`, { method: "POST", body: { motivo: motivo.value, detalle: detalle.value } });
+      caja.replaceChildren(el("h2", {}, "Reporte enviado"),
+        el("p", {}, "Gracias. La otra cuenta no sabrá quién la reportó."),
+        el("button", { type: "button", onclick: () => cerrar() }, "Cerrar"));
+    } catch (e) { msg.textContent = e.message; enviar.disabled = false; }
+  });
+}
+
 /* ===================== Usuarios y amistad (AUTOMATA) ===================== */
 // Ventana con los datos de la persona: solo se abre al presionar su nombre
 function verPerfilUsuario(u) {
@@ -584,6 +651,7 @@ function itemUsuario(u) {
       if (rel.bloqueado_por_mi) botones.push(btn("Desbloquear", acc("desbloquear")));
   }
   if (rel.estado !== "BLOQUEADA") botones.push(btn("Bloquear", acc("bloquear"), "peligro"));
+  botones.push(btn("Reportar", () => reportarUsuario(u), "peligro"));
 
   // En la lista solo se ve el nombre; el resto de datos aparece al presionarlo
   return el("div", { class: "usuario" }, avatar(u.nombres, false, u.foto),
@@ -693,7 +761,7 @@ async function mostrarGrupo(id) {
     ...(g.foto ? [el("button", { type: "button", class: "mini sec", onclick: quitarFoto }, "Quitar foto")] : []), archivo] : [];
 
   const cab = el("div", { class: "card" },
-    el("button", { class: "sec mini", onclick: () => listarGrupos().catch((e) => mostrarError("msg-app", e)) }, "← Todos los grupos"),
+    el("button", { class: "sec mini", onclick: () => irA("grupos").catch((e) => mostrarError("msg-app", e)) }, "← Todos los grupos"),
     el("div", { class: "perfil-cab separa" }, avatarGrupo(g, false, true),
       el("div", {}, el("h2", {}, g.nombre),
         g.descripcion ? el("p", {}, g.descripcion) : "",
@@ -712,8 +780,12 @@ async function mostrarGrupo(id) {
   if (g.soy_miembro) await pintarPosts(cont, id);
 }
 
-function abrirGrupo(id) {
-  return irA("grupos", false).then(() => mostrarGrupo(id)).catch((e) => mostrarError("msg-app", e));
+// Abre un grupo y lo registra en el historial (atras vuelve a donde estabas)
+function abrirGrupo(id, empujar = true) {
+  return irA("grupos", false, false).then(() => {
+    if (empujar) history.pushState({ tab: "grupos", id }, "", "#grupos");
+    return mostrarGrupo(id);
+  }).catch((e) => mostrarError("msg-app", e));
 }
 
 /* ===================== Mensajes directos (solo entre amigos) ===================== */
@@ -729,8 +801,12 @@ async function actualizarBadge() {
   } catch { /* sin sesion o sin red: se reintenta en el siguiente ciclo */ }
 }
 
-function abrirMensajes(id) {
-  return irA("mensajes", false).then(() => cargarMensajes(id)).catch((e) => mostrarError("msg-app", e));
+// Abre el chat con un amigo y lo registra en el historial
+function abrirMensajes(id, empujar = true) {
+  return irA("mensajes", false, false).then(() => {
+    if (empujar) history.pushState({ tab: "mensajes", id }, "", "#mensajes");
+    return cargarMensajes(id);
+  }).catch((e) => mostrarError("msg-app", e));
 }
 
 async function cargarMensajes(abrirId = null) {

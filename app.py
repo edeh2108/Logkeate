@@ -46,11 +46,41 @@ def oid(s):
         raise ErrorApi("Identificador invalido", 400)
 
 
+# ---------- suspension de cuentas por reportes ----------
+REPORTES_LIMITE = 5          # cuentas distintas que deben reportar
+DIAS_SUSPENSION = 5          # duracion de la suspension
+MOTIVOS_REPORTE = {"spam", "acoso", "suplantacion", "contenido_inapropiado", "otro"}
+LIMA = timezone(timedelta(hours=-5))   # Peru no usa horario de verano
+
+
+def suspension_activa(u):
+    """Devuelve la fecha de fin de la suspension si sigue vigente, o None."""
+    h = (u or {}).get("suspendido_hasta")
+    if not h:
+        return None
+    if h.tzinfo is None:                 # MongoDB devuelve fechas UTC sin zona
+        h = h.replace(tzinfo=timezone.utc)
+    return h if h > datetime.now(timezone.utc) else None
+
+
+def msg_suspension(h):
+    return ("Tu cuenta está suspendida hasta el " + h.astimezone(LIMA).strftime("%d/%m/%Y %H:%M")
+            + " (hora de Lima) por acumular reportes.")
+
+
 def login_required(f):
     @wraps(f)
     def w(*a, **k):
         if "uid" not in session:
             raise ErrorApi("Debes iniciar sesion", 401)
+        u = db.users.find_one({"_id": ObjectId(session["uid"])}, {"suspendido_hasta": 1})
+        if not u:
+            session.clear()
+            raise ErrorApi("Debes iniciar sesion", 401)
+        h = suspension_activa(u)
+        if h:                            # suspendida con la sesion abierta: se cierra al instante
+            session.clear()
+            raise ErrorApi(msg_suspension(h), 403)
         return f(*a, **k)
     return w
 
@@ -93,7 +123,8 @@ def resumen_relacion(me, doc):
 
 
 # huella y codigo son datos internos: nunca salen en las respuestas de la API
-PROY = {"pass_hash": 0, "email": 0, "huella": 0, "codigo": 0}
+# (suspendido_hasta tambien es privado)
+PROY = {"pass_hash": 0, "email": 0, "huella": 0, "codigo": 0, "suspendido_hasta": 0}
 
 
 # ---------- paginas ----------
@@ -163,6 +194,9 @@ def login():
     u = db.users.find_one({"email": {"$in": [validacion.normalizar_correo(crudo), crudo]}})
     if not u or not check_password_hash(u["pass_hash"], str(d.get("password", ""))):
         raise ErrorApi("Credenciales incorrectas", 401)
+    h = suspension_activa(u)             # se revisa DESPUES de la contrasena para no revelar cuentas
+    if h:
+        raise ErrorApi(msg_suspension(h), 403)
     session.clear()
     session["uid"] = str(u["_id"])
     session.permanent = True
@@ -981,6 +1015,43 @@ def borrar_mensaje(otro, mid):
     else:
         raise ErrorApi("Opcion invalida")
     return jsonify(ok=True)
+
+
+# ---------- reportes de cuentas ----------
+@app.post("/api/reportar/<otro>")
+@login_required
+def reportar(otro):
+    """Una cuenta solo puede reportar a otra una vez. Con REPORTES_LIMITE cuentas distintas,
+    la cuenta reportada se suspende DIAS_SUSPENSION dias y su contador se reinicia."""
+    otro_id = oid(otro)
+    if otro_id == yo():
+        raise ErrorApi("No puedes reportarte a ti mismo")
+    if not db.users.find_one({"_id": otro_id}, {"_id": 1}):
+        raise ErrorApi("Usuario no encontrado", 404)
+    d = datos()
+    motivo = str(d.get("motivo", ""))
+    if motivo not in MOTIVOS_REPORTE:
+        raise ErrorApi("Motivo invalido")
+    detalle = str(d.get("detalle", "")).strip()[:200]
+    ahora = datetime.now(timezone.utc)
+    try:
+        db.reports.insert_one({"reportado": otro_id, "reportante": yo(), "motivo": motivo,
+                               "detalle": detalle, "creado": ahora, "activo": True})
+    except DuplicateKeyError:
+        raise ErrorApi("Ya reportaste a esta cuenta", 409)
+    if db.reports.count_documents({"reportado": otro_id, "activo": True}) >= REPORTES_LIMITE:
+        db.users.update_one({"_id": otro_id},
+                            {"$set": {"suspendido_hasta": ahora + timedelta(days=DIAS_SUSPENSION)}})
+        db.reports.update_many({"reportado": otro_id, "activo": True}, {"$set": {"activo": False}})
+    return jsonify(ok=True), 201
+
+
+@app.get("/api/mis-reportes")
+@login_required
+def mis_reportes():
+    """Solo devuelve el conteo de MI cuenta: nadie mas puede verlo y nunca se revela quien reporto."""
+    n = db.reports.count_documents({"reportado": yo(), "activo": True})
+    return jsonify(reportes=n, limite=REPORTES_LIMITE, dias=DIAS_SUSPENSION)
 
 
 # ---------- buscador rapido (personas y grupos) ----------
