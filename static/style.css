@@ -102,7 +102,7 @@ button.mini { padding: .3rem .75rem; font-size: .85rem; margin: .3rem .3rem 0 0;
 .estado.PENDIENTE { background: var(--ambar-bg); color: var(--ambar); }
 .estado.BLOQUEADA { background: var(--rojo-bg); color: var(--rojo); }
 
-/* nombre clicable: abre la ventana con los datos de la persona */
+/* nombre clicable: abre el muro personal de la persona */
 .nombre-link { background: transparent; color: var(--titulo); padding: 0; margin: 0; border-radius: 6px; font-size: 1rem; font-weight: 700; text-align: left; }
 .nombre-link:hover { background: transparent; color: var(--vino-texto); text-decoration: underline; }
 
@@ -298,3 +298,18 @@ img.avatar { object-fit: cover; background: var(--suave2); }
 
 /* ---------- chat en solo lectura (bloqueo o amistad eliminada) ---------- */
 .aviso-chat { margin: 0; padding: .8rem 1rem; border-top: 1px solid var(--linea); text-align: center; background: var(--suave); border-radius: 0 0 var(--radio) var(--radio); }
+
+/* ---------- archivos adjuntos ---------- */
+.archivo { display: inline-flex; align-items: center; gap: .6rem; max-width: 100%; padding: .45rem .8rem; margin: .3rem 0; border: 1.5px solid var(--linea); border-radius: 12px; background: var(--blanco); color: var(--texto); text-decoration: none; }
+a.archivo:hover { background: var(--vino-claro); }
+.archivo-ico { font-size: 1.4rem; }
+.archivo-info { display: grid; min-width: 0; line-height: 1.2; }
+.archivo-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archivo-info small { color: var(--gris); opacity: 1; margin: 0; }
+.preview { flex-wrap: wrap; }
+.preview .item { display: flex; align-items: center; gap: .5rem; }
+.msg-img { display: block; max-width: 100%; max-height: 260px; border-radius: 10px; margin-bottom: .3rem; }
+.chat-adj { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; padding: .5rem .8rem; border-top: 1px solid var(--linea); }
+.chat-adj img { max-height: 70px; border-radius: 8px; }
+.chat-cab .mini { margin: 0; }
+.muro-cab .acciones { margin-top: .8rem; }

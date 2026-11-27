@@ -49,7 +49,7 @@ function avatar(nombre, peq = false, foto = null, grande = false) {
   return el("span", { class: "avatar" + tam, style: `background:hsl(${h} 45% 38%)` }, ini);
 }
 
-// Ventana flotante generica (nueva historia, visor de historias, perfil). Devuelve la funcion para cerrarla.
+// Ventana flotante generica (nueva historia, visor de historias, reportes). Devuelve la funcion para cerrarla.
 function abrirModal(contenido, alCerrar) {
   const fondo = el("div", { class: "modal" });
   const tecla = (ev) => { if (ev.key === "Escape") cerrar(); };
@@ -188,12 +188,13 @@ async function irA(tab, cargar = true, empujar = true) {
 
 // Boton "atras" / "adelante" del navegador y gesto "atras" del celular
 window.addEventListener("popstate", (ev) => {
-  document.querySelectorAll(".modal").forEach((m) => m.click());   // cierra ventanas abiertas (perfil, historias...)
+  document.querySelectorAll(".modal").forEach((m) => m.click());   // cierra ventanas abiertas (historias, reportes...)
   if ($("vista-app").hidden) return;
   const s = ev.state || {};
   const tab = CARGADORES[s.tab] ? s.tab : "muro";
   const p = tab === "grupos" && s.id ? abrirGrupo(s.id, false)
     : tab === "mensajes" && s.id ? abrirMensajes(s.id, false)
+    : tab === "perfil" && s.id ? abrirMuro(s.id, false)
     : irA(tab, true, false);
   p.catch((e) => mostrarError("msg-app", e));
 });
@@ -235,37 +236,73 @@ function botonLike(tipo, id, total, activo) {
   return b;
 }
 
-// Caja para publicar (muro o grupo): texto + emojis + foto opcional
+/* ===================== Archivos adjuntos ===================== */
+const MAX_ARCHIVO = 5 * 1024 * 1024, MAX_IMAGEN = 2 * 1024 * 1024;
+const ACCEPT_ARCHIVOS = ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,.7z,.odt,.ods,.odp,.py,.java,.ipynb,.md,.rtf";
+const fmtTam = (b) => (b < 1048576 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1048576).toFixed(1)} MB`);
+
+function contenidoArchivo(nombre, tam) {
+  return [el("span", { class: "archivo-ico" }, "📎"),
+    el("span", { class: "archivo-info" }, el("strong", {}, nombre), el("small", {}, fmtTam(tam)))];
+}
+// Enlace de descarga (publicaciones y chat)
+function chipArchivo(a) {
+  return el("a", { class: "archivo", href: `/api/archivos/${a.id}`, download: a.nombre, title: "Descargar" },
+    ...contenidoArchivo(a.nombre, a.tam));
+}
+async function subirArchivo(f) {
+  const fd = new FormData();
+  fd.append("archivo", f);
+  return api("/api/archivos", { method: "POST", form: fd });      // { id, nombre, tam }
+}
+
+// Caja para publicar (muro, muro personal o grupo): texto + emojis + foto y/o archivo opcionales
 function composer(grupoId, alPublicar) {
   const area = el("textarea", { maxlength: "1000",
     placeholder: grupoId ? "Comparte algo con el grupo…" : "¿Qué quieres compartir con San Marcos?" });
-  const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+  const fotoIn = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+  const docIn = el("input", { type: "file", accept: ACCEPT_ARCHIVOS, hidden: "" });
   const vista = el("div", { class: "preview", hidden: "" });
-  let img = null;
-  const quitar = () => { img = null; archivo.value = ""; vista.hidden = true; vista.replaceChildren(); };
-  archivo.addEventListener("change", () => {
-    const f = archivo.files[0];
+  let img = null, doc = null;
+
+  const pintarVista = () => {
+    const partes = [];
+    if (img) partes.push(el("div", { class: "item" }, el("img", { src: URL.createObjectURL(img), alt: "Vista previa" }),
+      el("button", { type: "button", class: "sec mini", onclick: () => { img = null; pintarVista(); } }, "Quitar")));
+    if (doc) partes.push(el("div", { class: "item" }, el("span", { class: "archivo" }, ...contenidoArchivo(doc.name, doc.size)),
+      el("button", { type: "button", class: "sec mini", onclick: () => { doc = null; pintarVista(); } }, "Quitar")));
+    vista.replaceChildren(...partes);
+    vista.hidden = !partes.length;
+  };
+  const limpiar = () => { img = null; doc = null; pintarVista(); };
+
+  fotoIn.addEventListener("change", () => {
+    const f = fotoIn.files[0]; fotoIn.value = "";
     if (!f) return;
-    if (f.size > 2 * 1024 * 1024) { quitar(); return mostrarError("msg-app", new Error("La imagen no puede pasar de 2 MB")); }
-    img = f;
-    mostrarError("msg-app", null);
-    vista.replaceChildren(el("img", { src: URL.createObjectURL(f), alt: "Vista previa" }),
-      el("button", { type: "button", class: "sec mini", onclick: quitar }, "Quitar"));
-    vista.hidden = false;
+    if (f.size > MAX_IMAGEN) return mostrarError("msg-app", new Error("La imagen no puede pasar de 2 MB"));
+    mostrarError("msg-app", null); img = f; pintarVista();
   });
+  docIn.addEventListener("change", () => {
+    const f = docIn.files[0]; docIn.value = "";
+    if (!f) return;
+    if (f.size > MAX_ARCHIVO) return mostrarError("msg-app", new Error("El archivo no puede pasar de 5 MB"));
+    mostrarError("msg-app", null); doc = f; pintarVista();
+  });
+
   const pub = el("button", {}, "Publicar");
   pub.addEventListener("click", async () => {
     pub.disabled = true;
     try {
-      let imagen_id = null;
+      let imagen_id = null, archivo_id = null;
       if (img) {
         const fd = new FormData();
         fd.append("imagen", img);
         imagen_id = (await api("/api/imagenes", { method: "POST", form: fd })).id;
       }
-      await api("/api/posts", { method: "POST", body: { texto: area.value, imagen_id, grupo_id: grupoId } });
+      if (doc) archivo_id = (await subirArchivo(doc)).id;
+      await api("/api/posts", { method: "POST", body: { texto: area.value, imagen_id, archivo_id, grupo_id: grupoId } });
       area.value = "";
-      quitar();
+      limpiar();
       mostrarError("msg-app", null);
       await alPublicar();
     } catch (e) { mostrarError("msg-app", e); }
@@ -273,8 +310,9 @@ function composer(grupoId, alPublicar) {
   });
   return el("div", { class: "card publicar" }, area, vista,
     el("div", { class: "barra" }, botonEmoji(area),
-      el("button", { type: "button", class: "icono-btn", title: "Agregar foto", onclick: () => archivo.click() }, "📷 Foto"),
-      archivo, el("span", { class: "espacio" }), pub));
+      el("button", { type: "button", class: "icono-btn", title: "Agregar foto", onclick: () => fotoIn.click() }, "📷 Foto"),
+      el("button", { type: "button", class: "icono-btn", title: "Adjuntar archivo", onclick: () => docIn.click() }, "📎 Archivo"),
+      fotoIn, docIn, el("span", { class: "espacio" }), pub));
 }
 
 /* ===================== Historias (duran 24 h) ===================== */
@@ -405,12 +443,13 @@ async function pintarHistorias() {
 }
 
 /* ===================== Muro + comentarios (ARBOL) ===================== */
-// Muro general (solo yo y mis amigos) o publicaciones de un grupo concreto
-async function pintarPosts(cont, grupoId) {
-  const posts = await api("/api/posts" + (grupoId ? `?grupo=${grupoId}` : ""));
-  const vacio = grupoId ? "Aún no hay publicaciones en este grupo. ¡Escribe la primera!"
-    : "Tu muro está vacío. Publica algo o agrega amigos para ver lo que comparten.";
-  const recargar = () => pintarPosts(cont, grupoId);
+// Muro general (yo y mis amigos), publicaciones de un grupo (grupoId) o muro personal de alguien (autorId)
+async function pintarPosts(cont, grupoId, autorId = null, vacioAutor = null) {
+  const q = grupoId ? `?grupo=${grupoId}` : autorId ? `?autor=${autorId}` : "";
+  const posts = await api("/api/posts" + q);
+  const vacio = vacioAutor || (grupoId ? "Aún no hay publicaciones en este grupo. ¡Escribe la primera!"
+    : "Tu muro está vacío. Publica algo o agrega amigos para ver lo que comparten.");
+  const recargar = () => pintarPosts(cont, grupoId, autorId, vacioAutor);
   cont.replaceChildren(...(posts.length ? posts.map((p) => tarjetaPost(p, recargar)) : [el("p", { class: "muted vacio" }, vacio)]));
 }
 
@@ -448,9 +487,11 @@ function tarjetaPost(p, alBorrar) {
 
   return el("div", { class: "card" },
     el("div", { class: "autor" }, avatar(p.autor, false, p.autor_foto),
-      el("div", {}, el("strong", {}, p.autor), el("span", { class: "muted" }, fecha(p.fecha)))),
+      el("div", {}, el("button", { type: "button", class: "nombre-link", title: "Ver muro",
+        onclick: () => abrirMuro(p.autor_id) }, p.autor), el("span", { class: "muted" }, fecha(p.fecha)))),
     ...(p.texto ? [el("p", { class: "texto" }, p.texto)] : []),
     ...(p.imagen ? [el("img", { class: "foto", src: `/api/imagenes/${p.imagen}`, alt: "Imagen publicada", loading: "lazy" })] : []),
+    ...(p.archivo ? [chipArchivo(p.archivo)] : []),
     el("div", { class: "acciones" }, botonLike("post", p.id, p.likes, p.yo_like), btn, ...extra), zona);
 }
 
@@ -465,7 +506,8 @@ async function pintarComentarios(postId, zona) {
 function renderNodo(nodo, profundidad, postId, zona) {
   const li = el("li", { class: "comentario" });
   const cuerpo = el("div", {},
-    el("div", { class: "autor" }, avatar(nodo.autor, true, nodo.autor_foto), el("strong", {}, nodo.autor),
+    el("div", { class: "autor" }, avatar(nodo.autor, true, nodo.autor_foto),
+      el("button", { type: "button", class: "nombre-link", onclick: () => abrirMuro(nodo.autor_id) }, nodo.autor),
       el("span", { class: "meta" }, fecha(nodo.fecha))),
     el("p", { class: "texto" }, nodo.texto));
   const resp = el("button", { class: "sec mini" }, "Responder");
@@ -612,7 +654,7 @@ function reportarUsuario(u) {
 }
 
 /* ===================== Usuarios y amistad (AUTOMATA) ===================== */
-// Botones de accion segun la relacion: se muestran dentro de la ventana del perfil
+// Botones de accion segun la relacion: se muestran en el muro de la persona
 function botonesAccion(u, cerrar) {
   const rel = u.relacion || { estado: "INEXISTENTE" };
   const btn = (txt, fn, clase = "") => el("button", { type: "button", class: `mini ${clase}`,
@@ -640,41 +682,20 @@ function botonesAccion(u, cerrar) {
   return botones;
 }
 
-// Ventana con los datos de la persona y sus acciones: solo se abre al presionar su nombre
-function verPerfilUsuario(u) {
-  const rel = u.relacion || { estado: "INEXISTENTE" };
-  const textoEstado = {
-    ACEPTADA: "Son amigos",
-    PENDIENTE: rel.emisor_soy_yo ? "Solicitud enviada" : "Te envió una solicitud",
-    RECHAZADA: "Solicitud rechazada",
-    BLOQUEADA: "Bloqueado",
-  }[rel.estado];
-  let cerrar;
-  const caja = el("div", { class: "modal-caja" },
-    el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
-      el("div", {}, el("h2", {}, u.nombres),
-        el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
-        ...(textoEstado ? [el("span", { class: `estado ${rel.estado}` }, textoEstado)] : []))),
-    ...(u.bio ? [el("p", {}, u.bio)] : []),
-    ...(u.intereses.length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))] : []),
-    el("div", { class: "acciones" }, ...botonesAccion(u, () => cerrar())),
-    el("button", { type: "button", class: "sec", onclick: () => cerrar() }, "Cerrar"));
-  cerrar = abrirModal(caja);
-}
-
-// En las listas solo se ve la foto y el nombre; todo lo demas sale al presionarlo
+// En las listas solo se ve la foto y el nombre; al presionarlo se abre el muro personal de esa persona
 function itemUsuario(u) {
   return el("div", { class: "usuario" }, avatar(u.nombres, false, u.foto),
-    el("div", {}, el("button", { type: "button", class: "nombre-link", title: "Ver perfil",
-      onclick: () => verPerfilUsuario(u) }, u.nombres)));
+    el("div", {}, el("button", { type: "button", class: "nombre-link", title: "Ver muro",
+      onclick: () => abrirMuro(u.id) }, u.nombres)));
 }
 
-// Vuelve a pintar la lista que se esta viendo (busqueda o amistades) y actualiza los globos
+// Vuelve a pintar la vista actual (busqueda, amistades o muro) y actualiza los globos
 async function refrescarVista() {
   if (tabActual === "buscar") {
     if (ultimaConsulta) await buscarTexto(ultimaConsulta, true);
     if (ultimoFiltro) await ejecutarBusqueda();
   } else if (tabActual === "amigos") await cargarAmigos();
+  else if (tabActual === "perfil") await mostrarMuro(muroId);
   actualizarBadge();
 }
 
@@ -798,6 +819,7 @@ async function mostrarGrupo(id) {
   );
   const cont = el("div");
   const partes = [cab];
+  // El cuadro de publicar del grupo ya permite adjuntar fotos y archivos
   if (g.soy_miembro) partes.push(composer(id, () => pintarPosts(cont, id)), cont);
   else partes.push(el("div", { class: "card" }, el("p", { class: "muted" }, "Únete al grupo para ver y compartir publicaciones.")));
   $("vista-grupos").replaceChildren(...partes);
@@ -860,10 +882,38 @@ async function cargarMensajes(abrirId = null) {
     activo = c.id;
     traerActivo = null;
     let ultimoId = null;
+    let adj = null;                       // adjunto pendiente: { tipo: "img" | "doc", f: File }
     const caja = el("div", { class: "chat-msgs", role: "log" });
     const inp = el("input", { placeholder: "Escribe un mensaje…", maxlength: "1000" });
     const enviar = el("button", { type: "submit" }, "Enviar");
-    const form = el("form", { class: "chat-form" }, inp, botonEmoji(inp), enviar);
+
+    // --- adjuntos (foto o archivo) ---
+    const vistaAdj = el("div", { class: "chat-adj", hidden: "" });
+    const fotoIn = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+    const docIn = el("input", { type: "file", accept: ACCEPT_ARCHIVOS, hidden: "" });
+    const pintarAdj = () => {
+      if (!adj) { vistaAdj.hidden = true; vistaAdj.replaceChildren(); return; }
+      vistaAdj.replaceChildren(
+        adj.tipo === "img" ? el("img", { src: URL.createObjectURL(adj.f), alt: "Vista previa" })
+          : el("span", { class: "archivo" }, ...contenidoArchivo(adj.f.name, adj.f.size)),
+        el("button", { type: "button", class: "sec mini", onclick: () => { adj = null; pintarAdj(); } }, "Quitar"));
+      vistaAdj.hidden = false;
+    };
+    const elegir = (f, tipo) => {
+      if (!f) return;
+      if (f.size > (tipo === "img" ? MAX_IMAGEN : MAX_ARCHIVO))
+        return mostrarError("msg-app", new Error(tipo === "img" ? "La imagen no puede pasar de 2 MB" : "El archivo no puede pasar de 5 MB"));
+      mostrarError("msg-app", null);
+      adj = { tipo, f };
+      pintarAdj();
+    };
+    fotoIn.addEventListener("change", () => { const f = fotoIn.files[0]; fotoIn.value = ""; elegir(f, "img"); });
+    docIn.addEventListener("change", () => { const f = docIn.files[0]; docIn.value = ""; elegir(f, "doc"); });
+    const btnFoto = el("button", { type: "button", class: "icono-btn", title: "Enviar foto", "aria-label": "Enviar foto",
+      onclick: () => fotoIn.click() }, "📷");
+    const btnDoc = el("button", { type: "button", class: "icono-btn", title: "Enviar archivo", "aria-label": "Enviar archivo",
+      onclick: () => docIn.click() }, "📎");
+    const form = el("form", { class: "chat-form" }, btnFoto, btnDoc, fotoIn, docIn, inp, botonEmoji(inp), enviar);
 
     const nodos = new Map();      // id de mensaje -> funcion que lo vuelve a pintar (para cambios en vivo)
     let sync = null;              // hora del servidor hasta la que ya vimos editados/eliminados
@@ -904,7 +954,7 @@ async function cargarMensajes(abrirId = null) {
           await api(`/api/mensajes/${c.id}/${d.id}?para=${para}`, { method: "DELETE" });
           mostrarError("msg-app", null);
           if (para === "mi") quitar();
-          else { d = { ...d, eliminado: true, texto: "" }; pintar(); }
+          else { d = { ...d, eliminado: true, texto: "", imagen: null, archivo: null }; pintar(); }
         } catch (e) { mostrarError("msg-app", e); }
       };
 
@@ -918,7 +968,11 @@ async function cargarMensajes(abrirId = null) {
         const abrirMenu = el("button", { type: "button", class: "msg-opc", "aria-label": "Opciones del mensaje",
           onclick: () => { menu.hidden = !menu.hidden; } }, "⋯");
         nodo.replaceChildren(
-          el("p", { class: "texto" + (d.eliminado ? " msg-borrado" : "") }, d.eliminado ? "Se eliminó este mensaje" : d.texto),
+          ...(d.imagen ? [el("a", { href: `/api/imagenes/${d.imagen}`, target: "_blank", rel: "noopener" },
+            el("img", { class: "msg-img", src: `/api/imagenes/${d.imagen}`, alt: "Foto enviada", loading: "lazy" }))] : []),
+          ...(d.archivo ? [chipArchivo(d.archivo)] : []),
+          ...(d.eliminado || d.texto ? [el("p", { class: "texto" + (d.eliminado ? " msg-borrado" : "") },
+            d.eliminado ? "Se eliminó este mensaje" : d.texto)] : []),
           el("div", { class: "msg-pie" }, el("small", {}, fecha(d.fecha) + (d.editado ? " · editado" : "")), abrirMenu),
           menu);
       }
@@ -947,11 +1001,21 @@ async function cargarMensajes(abrirId = null) {
     form.addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const texto = inp.value.trim();
-      if (!texto) return;
+      if (!texto && !adj) return;
       enviar.disabled = true;
       try {
-        await api(`/api/mensajes/${c.id}`, { method: "POST", body: { texto } });
+        const body = { texto };
+        if (adj && adj.tipo === "img") {
+          const fd = new FormData();
+          fd.append("imagen", adj.f);
+          body.imagen_id = (await api("/api/imagenes", { method: "POST", form: fd })).id;
+        } else if (adj) {
+          body.archivo_id = (await subirArchivo(adj.f)).id;
+        }
+        await api(`/api/mensajes/${c.id}`, { method: "POST", body });
         inp.value = "";
+        adj = null;
+        pintarAdj();
         mostrarError("msg-app", null);
         await traer(true);
       } catch (e) { mostrarError("msg-app", e); }
@@ -959,8 +1023,21 @@ async function cargarMensajes(abrirId = null) {
       inp.focus();
     });
 
+    // Eliminar el chat completo (solo para mí)
+    const borrarChat = async () => {
+      if (!confirm(`¿Eliminar tu chat con ${c.nombres}? Se borrará solo de tu cuenta; la otra persona conserva sus mensajes.`)) return;
+      try {
+        await api(`/api/mensajes/${c.id}`, { method: "DELETE" });
+        mostrarError("msg-app", null);
+        await cargarMensajes();
+      } catch (e) { mostrarError("msg-app", e); }
+    };
+
     panelChat.replaceChildren(
-      el("div", { class: "chat-cab" }, avatar(c.nombres, true, c.foto), el("strong", {}, c.nombres)), caja,
+      el("div", { class: "chat-cab" }, avatar(c.nombres, true, c.foto), el("strong", {}, c.nombres),
+        el("span", { class: "espacio" }),
+        el("button", { type: "button", class: "mini peligro", onclick: borrarChat }, "🗑 Eliminar chat")),
+      caja, ...(c.puede_escribir === false ? [] : [vistaAdj]),
       c.puede_escribir === false ? el("p", { class: "muted aviso-chat" }, c.aviso) : form);
     pintarLista();
     await sincronizar();          // punto de partida de los cambios en vivo
@@ -990,9 +1067,99 @@ async function cargarMensajes(abrirId = null) {
   }
 }
 
-/* ===================== Mi perfil ===================== */
+/* ===================== Muro personal (mi perfil y el de los demás) ===================== */
+let muroId = null;      // perfil que se está viendo en la pestaña "perfil"
+
+// Abre el muro de alguien y lo registra en el historial (atras vuelve a donde estabas)
+function abrirMuro(id, empujar = true) {
+  return irA("perfil", false, false).then(() => {
+    if (empujar) history.pushState({ tab: "perfil", id }, "", "#perfil");
+    return mostrarMuro(id);
+  }).catch((e) => mostrarError("msg-app", e));
+}
+
+// "Mi perfil" = mi propio muro (function declaration: se usa en CARGADORES antes de llegar aqui)
 async function cargarPerfil() {
-  const [u, arbol] = await Promise.all([api("/api/me"), api("/api/unidades-publicas")]);
+  return mostrarMuro(null);
+}
+
+async function mostrarMuro(id = null) {
+  const mio = await api("/api/me");
+  const uid = id || mio.id;
+  muroId = uid;
+  const u = await api(`/api/perfiles/${uid}`);
+  const rel = u.relacion || { estado: "INEXISTENTE" };
+  const textoEstado = u.soy_yo ? null : {
+    ACEPTADA: "Son amigos",
+    PENDIENTE: rel.emisor_soy_yo ? "Solicitud enviada" : "Te envió una solicitud",
+    RECHAZADA: "Solicitud rechazada",
+    BLOQUEADA: "Bloqueado",
+  }[rel.estado];
+  const stats = u.puede_ver_muro
+    ? `${u.n_posts} publicación${u.n_posts === 1 ? "" : "es"} · ${u.n_amigos} amigo${u.n_amigos === 1 ? "" : "s"}` : "";
+
+  // Botones: propios (foto + editar) o de amistad (enviar, aceptar, mensaje, bloquear, reportar…)
+  let botones = [];
+  let editar = null;
+  if (u.soy_yo) {
+    const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
+    archivo.addEventListener("change", async () => {
+      const f = archivo.files[0];
+      if (!f) return;
+      if (f.size > MAX_IMAGEN) return mostrarError("msg-app", new Error("La foto no puede pasar de 2 MB"));
+      try {
+        const fd = new FormData();
+        fd.append("imagen", f);
+        const { id: fotoId } = await api("/api/imagenes", { method: "POST", form: fd });
+        pintarChip(await api("/api/perfil", { method: "PUT", body: { foto_id: fotoId } }));
+        mostrarError("msg-app", null);
+        await mostrarMuro(uid);
+      } catch (e) { mostrarError("msg-app", e); }
+    });
+    const quitarFoto = async () => {
+      try { pintarChip(await api("/api/perfil", { method: "PUT", body: { foto_id: null } })); await mostrarMuro(uid); }
+      catch (e) { mostrarError("msg-app", e); }
+    };
+    editar = await formularioEditar(mio, uid);
+    botones = [
+      el("button", { type: "button", class: "mini", onclick: () => archivo.click() }, u.foto ? "Cambiar foto" : "Subir foto"),
+      ...(u.foto ? [el("button", { type: "button", class: "mini sec", onclick: quitarFoto }, "Quitar foto")] : []),
+      el("button", { type: "button", class: "mini sec", onclick: () => { editar.hidden = !editar.hidden; } }, "✏️ Editar perfil"),
+      archivo];
+  } else {
+    botones = botonesAccion(u, () => {});
+  }
+
+  const cab = el("div", { class: "card muro-cab" },
+    el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
+      el("div", {}, el("h2", {}, u.nombres),
+        el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
+        ...(textoEstado ? [el("span", { class: `estado ${rel.estado}` }, textoEstado)] : []),
+        ...(stats ? [el("p", { class: "muted" }, stats)] : []))),
+    ...(u.bio ? [el("p", { class: "texto" }, u.bio)] : []),
+    ...((u.intereses || []).length ? [el("div", {}, ...u.intereses.map((i) => el("span", { class: "etiqueta" }, i)))] : []),
+    el("div", { class: "acciones" }, ...botones));
+
+  const partes = [cab];
+  if (editar) partes.push(editar);
+  if (u.puede_ver_muro) {
+    const cont = el("div");
+    const vacio = u.soy_yo ? "Aún no has publicado nada. ¡Comparte algo!" : `${u.nombres.split(" ")[0]} aún no ha publicado nada.`;
+    const recargar = () => pintarPosts(cont, null, uid, vacio);
+    if (u.soy_yo) partes.push(composer(null, recargar));
+    partes.push(cont);
+    $("vista-perfil").replaceChildren(...partes);
+    await recargar();
+  } else {
+    partes.push(el("div", { class: "card" }, el("p", { class: "muted vacio" },
+      `Solo los amigos de ${u.nombres.split(" ")[0]} pueden ver sus publicaciones.`)));
+    $("vista-perfil").replaceChildren(...partes);
+  }
+}
+
+// Formulario de "Editar perfil" (oculto hasta presionar el boton)
+async function formularioEditar(u, uid) {
+  const arbol = await api("/api/unidades-publicas");
   const campo = (etiqueta, control) => el("label", {}, etiqueta, control);
   const nombres = el("input", { value: u.nombres, maxlength: "80", required: "" });
   const bio = el("textarea", { maxlength: "160", placeholder: "Cuéntale a San Marcos quién eres (máx. 160 caracteres)" });
@@ -1002,31 +1169,9 @@ async function cargarPerfil() {
   escuela.value = u.escuela_id;
   const ciclo = el("input", { type: "number", min: "1", max: "12", value: String(u.ciclo) });
   const intereses = el("input", { value: (u.intereses || []).join(", "), placeholder: "deportes, música, ajedrez" });
-  const ok = el("p", { class: "ok", role: "status" });
-
-  const archivo = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: "" });
-  archivo.addEventListener("change", async () => {
-    const f = archivo.files[0];
-    if (!f) return;
-    if (f.size > 2 * 1024 * 1024) return mostrarError("msg-app", new Error("La foto no puede pasar de 2 MB"));
-    try {
-      const fd = new FormData();
-      fd.append("imagen", f);
-      const { id } = await api("/api/imagenes", { method: "POST", form: fd });
-      pintarChip(await api("/api/perfil", { method: "PUT", body: { foto_id: id } }));
-      mostrarError("msg-app", null);
-      await cargarPerfil();
-    } catch (e) { mostrarError("msg-app", e); }
-  });
-  const quitarFoto = async () => {
-    try { pintarChip(await api("/api/perfil", { method: "PUT", body: { foto_id: null } })); await cargarPerfil(); }
-    catch (e) { mostrarError("msg-app", e); }
-  };
-
-  const guardar = el("button", { type: "submit" }, "Guardar cambios");
   const form = el("form", {}, campo("Nombre completo", nombres), campo("Sobre mí", bio),
     campo("Escuela profesional", escuela), campo("Ciclo", ciclo), campo("Intereses", intereses),
-    guardar, ok);
+    el("button", { type: "submit" }, "Guardar cambios"));
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
@@ -1035,20 +1180,10 @@ async function cargarPerfil() {
         intereses: intereses.value } });
       pintarChip(nuevo);
       mostrarError("msg-app", null);
-      $("vista-perfil").querySelector(".perfil-cab h2").textContent = nuevo.nombres;
-      $("vista-perfil").querySelector(".perfil-cab p").textContent = `${nuevo.escuela} · ${nuevo.facultad} · ciclo ${nuevo.ciclo}`;
-      ok.textContent = "✓ Perfil actualizado";
-    } catch (e) { ok.textContent = ""; mostrarError("msg-app", e); }
+      await mostrarMuro(uid);
+    } catch (e) { mostrarError("msg-app", e); }
   });
-
-  $("vista-perfil").replaceChildren(
-    el("div", { class: "card" },
-      el("div", { class: "perfil-cab" }, avatar(u.nombres, false, u.foto, true),
-        el("div", {}, el("h2", {}, u.nombres), el("p", { class: "muted" }, `${u.escuela} · ${u.facultad} · ciclo ${u.ciclo}`),
-          el("div", { class: "acciones" },
-            el("button", { type: "button", class: "mini", onclick: () => archivo.click() }, u.foto ? "Cambiar foto" : "Subir foto"),
-            ...(u.foto ? [el("button", { type: "button", class: "mini sec", onclick: quitarFoto }, "Quitar foto")] : []), archivo)))),
-    el("div", { class: "card" }, el("h2", {}, "Editar perfil"), form));
+  return el("div", { class: "card", hidden: "" }, el("h2", {}, "Editar perfil"), form);
 }
 
 /* ===================== Configuracion ===================== */

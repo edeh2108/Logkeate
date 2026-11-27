@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from dominio import validacion, busqueda, conjuntos, grafo, arboles
+from dominio import validacion, busqueda, conjuntos, grafo, arboles, visibilidad
 from dominio.solicitud_fsm import Solicitud, Ev, E, TransicionInvalida
 
 
@@ -173,6 +173,19 @@ class TestIdentidad(unittest.TestCase):
         self.assertTrue(validacion.codigo_valido(" 20200123 "))
         for malo in ["2020012", "202001234", "2020012a", ""]:
             self.assertFalse(validacion.codigo_valido(malo), malo)
+
+
+class TestVisibilidad(unittest.TestCase):
+    def test_muro(self):
+        self.assertTrue(visibilidad.puede_ver_muro("A", "A", []))          # v = d
+        self.assertTrue(visibilidad.puede_ver_muro("A", "B", ["A", "C"]))  # v ∈ Amigos(d)
+        self.assertFalse(visibilidad.puede_ver_muro("X", "B", ["A", "C"]))
+
+    def test_mensajes_ocultos(self):
+        self.assertTrue(visibilidad.mensaje_visible(["A"], "B"))
+        self.assertFalse(visibilidad.mensaje_visible(["A"], "A"))
+        self.assertFalse(visibilidad.debe_purgarse(["A"], "A", "B"))
+        self.assertTrue(visibilidad.debe_purgarse(["B", "A", "A"], "A", "B"))
 
 
 if __name__ == "__main__":

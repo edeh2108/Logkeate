@@ -61,3 +61,8 @@ def crear_indices():
     db.reports.create_index("reportante")
     db.friend_requests.create_index("receptor")                        # contador de solicitudes recibidas
     db.friend_requests.create_index("emisor")
+    # Archivos adjuntos: los que se suben y nunca se usan caducan solos (campo `expira`)
+    _indice_ttl(db.files)
+    db.files.create_index("owner")
+    db.posts.create_index("archivo_id", sparse=True)
+    db.messages.create_index("archivo_id", sparse=True)

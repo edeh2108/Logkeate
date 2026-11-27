@@ -2,6 +2,7 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 from functools import wraps
+from urllib.parse import quote
 
 from bson import ObjectId
 from bson.binary import Binary
@@ -13,7 +14,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from db import db, crear_indices
 import servicios
 from servicios import Conflicto
-from dominio import validacion, busqueda, conjuntos, grafo, arboles
+from dominio import validacion, busqueda, conjuntos, grafo, arboles, visibilidad
 from dominio.solicitud_fsm import Ev, E, TransicionInvalida
 from dominio import solicitud_fsm
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -23,7 +24,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.getenv("APP_ENV") == "production",
     PERMANENT_SESSION_LIFETIME=timedelta(days=7),
-    MAX_CONTENT_LENGTH=3 * 1024 * 1024,   # tope global (las imagenes admiten 2 MB)
+    MAX_CONTENT_LENGTH=6 * 1024 * 1024,   # tope global (imagenes 2 MB, archivos 5 MB)
 )
 crear_indices()
 
@@ -288,6 +289,29 @@ def editar_perfil():
     return me()
 
 
+# ---------- muro personal ----------
+@app.get("/api/perfiles/<uid>")
+@login_required
+def ver_perfil(uid):
+    """Datos del muro personal. Las publicaciones se piden aparte: /api/posts?autor=<id>."""
+    otro = oid(uid)
+    u = db.users.find_one({"_id": otro}, PROY)
+    if not u:
+        raise ErrorApi("Usuario no encontrado", 404)
+    me_id = yo()
+    soy_yo = otro == me_id
+    doc = None if soy_yo else db.friend_requests.find_one({"par": servicios.clave_par(me_id, otro)})
+    if doc and doc["estado"] == "BLOQUEADA" and doc.get("bloqueado_por") != me_id:
+        raise ErrorApi("Usuario no encontrado", 404)       # si te bloqueo, no existe para ti
+    amigos_otro = servicios.vecinos(otro)
+    puede = visibilidad.puede_ver_muro(me_id, otro, amigos_otro)
+    out = publico(u, None if soy_yo else resumen_relacion(me_id, doc, otro, reportes_mios()))
+    out.update(soy_yo=soy_yo, puede_ver_muro=puede,
+               n_amigos=len(amigos_otro) if puede else None,
+               n_posts=db.posts.count_documents({"autor": otro, "grupo_id": {"$exists": False}}) if puede else None)
+    return jsonify(out)
+
+
 # ---------- buscador (algebra de Boole) ----------
 @app.post("/api/buscar")
 @login_required
@@ -457,6 +481,78 @@ def ver_imagen(img_id):
                     headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
 
+# ---------- archivos adjuntos (posts, grupos y mensajes) ----------
+MAX_ARCHIVO = 5 * 1024 * 1024
+EXT_ARCHIVO = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "zip", "rar", "7z",
+               "odt", "ods", "odp", "py", "java", "ipynb", "md", "rtf"}
+
+
+def limpiar_nombre(n):
+    n = os.path.basename(str(n or "").replace("\\", "/"))
+    return re.sub(r'[\x00-\x1f"<>|*?:]', "", n).strip()[:100]
+
+
+@app.post("/api/archivos")
+@login_required
+def subir_archivo():
+    f = request.files.get("archivo")
+    if not f:
+        raise ErrorApi("Elige un archivo")
+    nombre = limpiar_nombre(f.filename)
+    ext = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
+    if ext not in EXT_ARCHIVO:
+        raise ErrorApi("Tipo de archivo no permitido (PDF, Office, TXT, CSV, ZIP, código…)")
+    data = f.read(MAX_ARCHIVO + 1)
+    if not data:
+        raise ErrorApi("El archivo esta vacio")
+    if len(data) > MAX_ARCHIVO:
+        raise ErrorApi("El archivo no puede pasar de 5 MB", 413)
+    ahora = datetime.now(timezone.utc)
+    r = db.files.insert_one({"owner": yo(), "nombre": nombre, "tam": len(data), "data": Binary(data),
+                             "creado": ahora, "expira": ahora + timedelta(hours=2)})   # se quita al adjuntarlo
+    return jsonify(id=str(r.inserted_id), nombre=nombre, tam=len(data)), 201
+
+
+def tomar_archivo(valor):
+    """Valida que el archivo sea mio y no se haya usado, y lo 'fija' (quita la caducidad)."""
+    fid = oid(valor)
+    f = db.files.find_one({"_id": fid, "owner": yo(), "expira": {"$exists": True}}, {"nombre": 1, "tam": 1})
+    if not f:
+        raise ErrorApi("Archivo invalido o ya usado")
+    db.files.update_one({"_id": fid}, {"$unset": {"expira": ""}})
+    return f
+
+
+def puede_ver_archivo(f):
+    """Dueño; o quien pueda ver la publicacion que lo contiene; o participante del chat donde se envio."""
+    me_id = yo()
+    if f["owner"] == me_id:
+        return True
+    p = db.posts.find_one({"archivo_id": f["_id"]})
+    if p:
+        try:
+            acceso_post(p)
+            return True
+        except ErrorApi:
+            return False
+    m = db.messages.find_one({"archivo_id": f["_id"]}, {"emisor": 1, "receptor": 1})
+    return bool(m and me_id in (m["emisor"], m["receptor"]))
+
+
+@app.get("/api/archivos/<fid>")
+@login_required
+def bajar_archivo(fid):
+    f = db.files.find_one({"_id": oid(fid)})
+    if not f:
+        raise ErrorApi("Archivo no encontrado", 404)
+    if not puede_ver_archivo(f):
+        raise ErrorApi("No tienes acceso a este archivo", 403)
+    # Siempre como descarga y sin tipo real: un .html o .svg subido nunca se ejecuta en el sitio
+    return Response(bytes(f["data"]), mimetype="application/octet-stream",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(f["nombre"]),
+                             "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=3600"})
+
+
 # ---------- publicaciones, comentarios (arbol) y me gusta ----------
 def acceso_post(p):
     """Grupo: solo miembros. Muro general: solo el autor o sus amigos."""
@@ -490,25 +586,33 @@ def serializar_posts(docs):
     fotos = fotos_de([p["autor"] for p in docs])
     out = []
     for p in docs:
-        item = {"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_foto": fotos.get(p["autor"]),
-                "texto": p.get("texto", ""),
-                "imagen": str(p["imagen_id"]) if p.get("imagen_id") else None,
-                "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0),
-                "yo_like": p["_id"] in mios,
-                "mio": p["autor"] == me_id,
-                "n_comentarios": db.comments.count_documents({"post_id": p["_id"]})}
-        out.append(item)
+        out.append({"id": str(p["_id"]), "autor": p["autor_nombre"], "autor_id": str(p["autor"]),
+                    "autor_foto": fotos.get(p["autor"]),
+                    "texto": p.get("texto", ""),
+                    "imagen": str(p["imagen_id"]) if p.get("imagen_id") else None,
+                    "archivo": ({"id": str(p["archivo_id"]), "nombre": p.get("archivo_nombre", ""),
+                                 "tam": p.get("archivo_tam", 0)} if p.get("archivo_id") else None),
+                    "fecha": p["creado"].isoformat(), "likes": cuenta.get(p["_id"], 0),
+                    "yo_like": p["_id"] in mios,
+                    "mio": p["autor"] == me_id,
+                    "n_comentarios": db.comments.count_documents({"post_id": p["_id"]})})
     return out
 
 
 @app.get("/api/posts")
 @login_required
 def posts():
-    g = request.args.get("grupo")
+    g, a = request.args.get("grupo"), request.args.get("autor")
     if g:
         gid = oid(g)
         acceso_post({"grupo_id": gid})
         filtro = {"grupo_id": gid}
+    elif a:
+        # Muro personal: solo el dueño y sus amigos; nunca las publicaciones de grupos
+        aid = oid(a)
+        if not visibilidad.puede_ver_muro(yo(), aid, servicios.vecinos(aid)):
+            raise ErrorApi("Solo puedes ver las publicaciones de tus amigos", 403)
+        filtro = {"grupo_id": {"$exists": False}, "autor": aid}
     else:
         # Muro general: solo mis publicaciones y las de mis amigos, sin las de grupos
         permitidos = servicios.vecinos(yo()) + [yo()]
@@ -527,8 +631,8 @@ def crear_post():
         img = oid(d["imagen_id"])
         if not db.images.find_one({"_id": img, "owner": yo()}, {"_id": 1}):
             raise ErrorApi("Imagen invalida")
-    if len(texto) > 1000 or (not texto and not img):
-        raise ErrorApi("Escribe algo (maximo 1000 caracteres) o agrega una imagen")
+    if len(texto) > 1000 or (not texto and not img and not d.get("archivo_id")):
+        raise ErrorApi("Escribe algo (maximo 1000 caracteres) o agrega una imagen o archivo")
     u = db.users.find_one({"_id": yo()}, {"nombres": 1})
     doc = {"autor": u["_id"], "autor_nombre": u["nombres"], "texto": texto, "creado": datetime.now(timezone.utc)}
     if img:
@@ -536,6 +640,9 @@ def crear_post():
     if d.get("grupo_id"):
         doc["grupo_id"] = oid(d["grupo_id"])
         acceso_post(doc)
+    if d.get("archivo_id"):                      # al final: solo se "fija" si todo lo demas es valido
+        a = tomar_archivo(d["archivo_id"])
+        doc.update(archivo_id=a["_id"], archivo_nombre=a["nombre"], archivo_tam=a["tam"])
     db.posts.insert_one(doc)
     return jsonify(ok=True), 201
 
@@ -543,7 +650,7 @@ def crear_post():
 @app.delete("/api/posts/<post_id>")
 @login_required
 def borrar_post(post_id):
-    """Solo el autor puede eliminar su publicacion. Se borran tambien sus comentarios, likes e imagen."""
+    """Solo el autor puede eliminar su publicacion. Se borran tambien sus comentarios, likes, imagen y archivo."""
     pid = oid(post_id)
     p = db.posts.find_one({"_id": pid})
     if not p:
@@ -557,6 +664,8 @@ def borrar_post(post_id):
     db.likes.delete_many({"tipo": "post", "obj": pid})
     if p.get("imagen_id"):
         db.images.delete_one({"_id": p["imagen_id"], "owner": yo()})
+    if p.get("archivo_id"):
+        db.files.delete_one({"_id": p["archivo_id"]})
     db.posts.delete_one({"_id": pid})
     return jsonify(ok=True)
 
@@ -880,10 +989,11 @@ def exigir_amistad(otro_id):
 
 
 def contactos_chat(me_id):
-    """Personas con las que tengo chat: mis amigos y cualquiera con quien ya hay mensajes
-    (un bloqueo o eliminar la amistad NO borra la conversacion de ninguno de los dos)."""
-    previos = set(db.messages.distinct("emisor", {"receptor": me_id})) | \
-        set(db.messages.distinct("receptor", {"emisor": me_id}))
+    """Mis amigos y quienes tienen mensajes VISIBLES para mi (un chat que elimine deja de aparecer
+    si ya no son amigos; un bloqueo o eliminar la amistad NO borra el historial)."""
+    vis = {"borrado_para": {"$ne": me_id}}
+    previos = set(db.messages.distinct("emisor", {"receptor": me_id, **vis})) | \
+        set(db.messages.distinct("receptor", {"emisor": me_id, **vis}))
     return list(set(servicios.vecinos(me_id)) | previos)
 
 
@@ -902,14 +1012,14 @@ def estado_chat(me_id, doc):
 
 
 def exigir_conversacion(otro_id):
-    """Para LEER el chat: amigos, o personas con historial en comun (aunque haya bloqueo)."""
+    """Para LEER el chat: amigos, o personas con historial visible en comun (aunque haya bloqueo)."""
     if otro_id == yo():
         raise ErrorApi("No puedes escribirte a ti mismo")
     par = servicios.clave_par(yo(), otro_id)
     doc = db.friend_requests.find_one({"par": par}, {"estado": 1})
     if doc and doc["estado"] == "ACEPTADA":
         return
-    if not db.messages.find_one({"par": par}, {"_id": 1}):
+    if not db.messages.find_one({"par": par, "borrado_para": {"$ne": yo()}}, {"_id": 1}):
         raise ErrorApi("Solo puedes chatear con tus amigos", 403)
 
 
@@ -917,7 +1027,36 @@ def json_mensaje(m):
     eliminado = bool(m.get("eliminado"))
     return {"id": str(m["_id"]), "mio": m["emisor"] == yo(), "texto": "" if eliminado else m["texto"],
             "fecha": m["creado"].isoformat(), "editado": bool(m.get("editado")) and not eliminado,
-            "eliminado": eliminado}
+            "eliminado": eliminado,
+            "imagen": str(m["imagen_id"]) if m.get("imagen_id") and not eliminado else None,
+            "archivo": ({"id": str(m["archivo_id"]), "nombre": m.get("archivo_nombre", ""),
+                         "tam": m.get("archivo_tam", 0)} if m.get("archivo_id") and not eliminado else None)}
+
+
+def vista_previa(m):
+    """Texto corto para la lista de conversaciones."""
+    if m.get("eliminado"):
+        return "Se eliminó este mensaje"
+    if m.get("texto"):
+        return m["texto"]
+    return "📷 Foto" if m.get("imagen_id") else "📎 " + m.get("archivo_nombre", "Archivo")
+
+
+def borrar_adjuntos(msgs):
+    imgs = [m["imagen_id"] for m in msgs if m.get("imagen_id")]
+    arch = [m["archivo_id"] for m in msgs if m.get("archivo_id")]
+    if imgs:
+        db.images.delete_many({"_id": {"$in": imgs}})
+    if arch:
+        db.files.delete_many({"_id": {"$in": arch}})
+
+
+def purgar_mensajes(par, a, b):
+    """Si los DOS ocultaron un mensaje ({a,b} ⊆ borrado_para), nadie puede verlo: se borra de verdad."""
+    docs = list(db.messages.find({"par": par, "borrado_para": {"$all": [a, b]}}))
+    if docs:
+        borrar_adjuntos(docs)
+        db.messages.delete_many({"_id": {"$in": [m["_id"] for m in docs]}})
 
 
 @app.get("/api/mensajes")
@@ -944,8 +1083,7 @@ def conversaciones():
         m = ultimos.get(par)
         out.append({"id": str(a), "nombres": u["nombres"],
                     "foto": str(u["foto_id"]) if u.get("foto_id") else None,
-                    "ultimo": (("Tú: " if m["emisor"] == me_id else "")
-                             + ("Se eliminó este mensaje" if m.get("eliminado") else m["texto"]))[:60] if m else "",
+                    "ultimo": (("Tú: " if m["emisor"] == me_id else "") + vista_previa(m))[:60] if m else "",
                     "fecha": m["creado"].isoformat() if m else None,
                     "no_leidos": sin_leer.get(a, 0),
                     **estado_chat(me_id, rels.get(str(a)))})
@@ -988,16 +1126,30 @@ def historial(otro):
 def enviar_mensaje(otro):
     otro_id = oid(otro)
     exigir_amistad(otro_id)
-    texto = str(datos().get("texto", "")).strip()
-    if not 1 <= len(texto) <= MAX_MSG:
-        raise ErrorApi(f"El mensaje debe tener entre 1 y {MAX_MSG} caracteres")
+    d = datos()
+    texto = str(d.get("texto", "")).strip()
+    img = None
+    if d.get("imagen_id"):
+        img = oid(d["imagen_id"])
+        if not db.images.find_one({"_id": img, "owner": yo()}, {"_id": 1}):
+            raise ErrorApi("Imagen invalida")
+        if d.get("archivo_id"):
+            raise ErrorApi("Envía una foto o un archivo por mensaje")
+    if len(texto) > MAX_MSG or (not texto and not img and not d.get("archivo_id")):
+        raise ErrorApi(f"Escribe un mensaje (máx. {MAX_MSG} caracteres) o adjunta una foto o un archivo")
     ahora = datetime.now(timezone.utc)
     recientes = db.messages.count_documents(
         {"emisor": yo(), "creado": {"$gt": ahora - timedelta(seconds=60)}})
     if recientes >= MSG_POR_MINUTO:
         raise ErrorApi("Estás enviando mensajes muy rápido. Espera un momento.", 429)
-    db.messages.insert_one({"par": servicios.clave_par(yo(), otro_id), "emisor": yo(), "receptor": otro_id,
-                            "texto": texto, "creado": ahora, "leido": False})
+    doc = {"par": servicios.clave_par(yo(), otro_id), "emisor": yo(), "receptor": otro_id,
+           "texto": texto, "creado": ahora, "leido": False}
+    if img:
+        doc["imagen_id"] = img
+    if d.get("archivo_id"):
+        a = tomar_archivo(d["archivo_id"])
+        doc.update(archivo_id=a["_id"], archivo_nombre=a["nombre"], archivo_tam=a["tam"])
+    db.messages.insert_one(doc)
     return jsonify(ok=True), 201
 
 
@@ -1041,8 +1193,9 @@ def editar_mensaje(otro, mid):
     if m.get("eliminado"):
         raise ErrorApi("No se puede editar un mensaje eliminado", 409)
     texto = str(datos().get("texto", "")).strip()
-    if not 1 <= len(texto) <= MAX_MSG:
-        raise ErrorApi(f"El mensaje debe tener entre 1 y {MAX_MSG} caracteres")
+    minimo = 0 if (m.get("imagen_id") or m.get("archivo_id")) else 1      # con adjunto, el texto es opcional
+    if not minimo <= len(texto) <= MAX_MSG:
+        raise ErrorApi(f"El mensaje debe tener entre {minimo} y {MAX_MSG} caracteres")
     db.messages.update_one({"_id": m["_id"]},
                            {"$set": {"texto": texto, "editado": True, "modificado": datetime.now(timezone.utc)}})
     return jsonify(json_mensaje(db.messages.find_one({"_id": m["_id"]})))
@@ -1052,18 +1205,35 @@ def editar_mensaje(otro, mid):
 @login_required
 def borrar_mensaje(otro, mid):
     """?para=mi  -> solo desaparece para mi.  ?para=todos -> solo el emisor; queda 'Se eliminó este mensaje'."""
-    m = mensaje_del_chat(oid(otro), mid)
+    otro_id = oid(otro)
+    m = mensaje_del_chat(otro_id, mid)
     para = request.args.get("para", "mi")
     if para == "todos":
-        exigir_amistad(oid(otro))
+        exigir_amistad(otro_id)
         if m["emisor"] != yo():
             raise ErrorApi("Solo puedes eliminar para todos tus propios mensajes", 403)
-        db.messages.update_one({"_id": m["_id"]},
-                               {"$set": {"eliminado": True, "texto": "", "modificado": datetime.now(timezone.utc)}})
+        borrar_adjuntos([m])
+        db.messages.update_one({"_id": m["_id"]}, {
+            "$set": {"eliminado": True, "texto": "", "modificado": datetime.now(timezone.utc)},
+            "$unset": {"imagen_id": "", "archivo_id": "", "archivo_nombre": "", "archivo_tam": ""}})
     elif para == "mi":
         db.messages.update_one({"_id": m["_id"]}, {"$addToSet": {"borrado_para": yo()}})
+        purgar_mensajes(m["par"], yo(), otro_id)
     else:
         raise ErrorApi("Opcion invalida")
+    return jsonify(ok=True)
+
+
+@app.delete("/api/mensajes/<otro>")
+@login_required
+def borrar_conversacion(otro):
+    """Elimina TODO el chat solo para mi. La otra persona conserva sus mensajes; si ambos lo eliminan, se purga."""
+    otro_id = oid(otro)
+    if otro_id == yo():
+        raise ErrorApi("No puedes escribirte a ti mismo")
+    par = servicios.clave_par(yo(), otro_id)
+    db.messages.update_many({"par": par}, {"$addToSet": {"borrado_para": yo()}})
+    purgar_mensajes(par, yo(), otro_id)
     return jsonify(ok=True)
 
 
